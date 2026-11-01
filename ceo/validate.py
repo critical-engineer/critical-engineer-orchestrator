@@ -165,6 +165,12 @@ _UniqueKeyLoader.add_constructor(
 )
 
 
+def load_ceo_entries(path: Path) -> dict:
+    """The ``tasks`` mapping from ``ceo.yaml``. Validate the change first."""
+    data = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
+    return data["tasks"]
+
+
 def _validate_ceo_yaml(path: Path, task_ids: set[str]) -> list[Problem]:
     file = path.name
     if not path.is_file():

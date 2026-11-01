@@ -10,7 +10,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 TASK_STATUSES = ("pending", "running", "completed", "blocked")
 
@@ -76,8 +76,18 @@ BEGIN SELECT RAISE(ABORT, 'events is append-only'); END;
 CREATE TRIGGER events_no_delete BEFORE DELETE ON events
 BEGIN SELECT RAISE(ABORT, 'events is append-only'); END;
 
-PRAGMA user_version = {SCHEMA_VERSION};
+PRAGMA user_version = 1;
 """
+
+# Each migration takes the schema from version N-1 to N. A new ledger gets the
+# version 1 schema and then every migration, so there is one path to "current".
+_MIGRATIONS = {
+    2: [
+        # Hash of a task's definition (description + ceo.yaml entry), used by
+        # sync to spot tasks that changed after they ran (T4, F9).
+        "ALTER TABLE tasks ADD COLUMN definition_hash TEXT",
+    ],
+}
 
 
 class LedgerError(Exception):
@@ -100,26 +110,32 @@ def _version(conn: sqlite3.Connection) -> int:
 
 
 def _initialise(conn: sqlite3.Connection) -> None:
-    """Create the schema on ``conn`` if needed, atomically.
+    """Create or migrate the schema on ``conn`` if needed, atomically.
 
-    A current ledger is detected without taking the write lock. A new one is
-    created inside a single write transaction, re-checking the version once
-    the lock is held, so a failure leaves an empty file and concurrent openers
-    can't both create tables. ``executescript()`` is avoided because it
-    commits any open transaction.
+    A current ledger is detected without taking the write lock. Creation and
+    migrations run inside a single write transaction, re-checking the version
+    once the lock is held, so a failure leaves the file as it was and
+    concurrent openers can't both apply DDL. ``executescript()`` is avoided
+    because it commits any open transaction.
     """
     version = _version(conn)
     if version == SCHEMA_VERSION:
         return
-    if version != 0:
+    if version > SCHEMA_VERSION:
         raise LedgerError(
             f"ledger schema version {version}, this code expects {SCHEMA_VERSION}"
         )
     conn.execute("BEGIN IMMEDIATE")
     try:
-        if _version(conn) == 0:
+        version = _version(conn)
+        if version == 0:
             for statement in _statements(_SCHEMA):
                 conn.execute(statement)
+            version = 1
+        for target in range(version + 1, SCHEMA_VERSION + 1):
+            for statement in _MIGRATIONS[target]:
+                conn.execute(statement)
+            conn.execute(f"PRAGMA user_version = {target}")
         conn.commit()
     except BaseException:
         try:
@@ -142,6 +158,22 @@ def open_ledger(path: str | Path, *, timeout: float = 30.0) -> sqlite3.Connectio
     return conn
 
 
+def append_event(
+    conn: sqlite3.Connection,
+    kind: str,
+    *,
+    plan_id: int | None = None,
+    task_id: str | None = None,
+    detail: dict | None = None,
+) -> int:
+    """Add an event inside the caller's transaction (no commit)."""
+    cur = conn.execute(
+        "INSERT INTO events (kind, plan_id, task_id, detail) VALUES (?, ?, ?, ?)",
+        (kind, plan_id, task_id, json.dumps(detail) if detail is not None else None),
+    )
+    return cur.lastrowid
+
+
 def record_event(
     conn: sqlite3.Connection,
     kind: str,
@@ -150,9 +182,7 @@ def record_event(
     task_id: str | None = None,
     detail: dict | None = None,
 ) -> int:
-    cur = conn.execute(
-        "INSERT INTO events (kind, plan_id, task_id, detail) VALUES (?, ?, ?, ?)",
-        (kind, plan_id, task_id, json.dumps(detail) if detail is not None else None),
-    )
+    """Add an event and commit."""
+    event_id = append_event(conn, kind, plan_id=plan_id, task_id=task_id, detail=detail)
     conn.commit()
-    return cur.lastrowid
+    return event_id

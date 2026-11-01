@@ -84,6 +84,41 @@ def test_concurrent_first_opens(tmp_path):
     assert versions == [SCHEMA_VERSION] * 8
 
 
+def test_version_1_ledger_is_migrated(tmp_path):
+    path = tmp_path / "ledger.db"
+    c = sqlite3.connect(path)
+    for statement in ledger._statements(ledger._SCHEMA):  # the version 1 schema
+        c.execute(statement)
+    c.execute("INSERT INTO plans (repo, change) VALUES ('r', 'c')")
+    c.execute("INSERT INTO tasks (plan_id, id) VALUES (1, '1.1')")
+    c.commit()
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 1
+    c.close()
+
+    c = open_ledger(path)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
+    row = c.execute("SELECT * FROM tasks").fetchone()
+    assert (row["id"], row["definition_hash"]) == ("1.1", None)
+    c.close()
+
+
+def test_failed_migration_leaves_previous_version(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.db"
+    c = sqlite3.connect(path)
+    for statement in ledger._statements(ledger._SCHEMA):
+        c.execute(statement)
+    c.commit()
+    c.close()
+    monkeypatch.setitem(ledger._MIGRATIONS, 2, ["ALTER TABLE tasks ADD COLUMN x", "bad syntax"])
+    with pytest.raises(sqlite3.OperationalError):
+        open_ledger(path)
+    c = sqlite3.connect(path)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 1
+    columns = [r[1] for r in c.execute("PRAGMA table_info(tasks)")]
+    assert "x" not in columns
+    c.close()
+
+
 def test_in_memory_ledger_has_schema():
     c = open_ledger(":memory:")
     c.execute("INSERT INTO plans (repo, change) VALUES ('r', 'c')")
