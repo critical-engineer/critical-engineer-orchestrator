@@ -24,8 +24,11 @@ BLAST_RADII = ("low", "medium", "high")
 _ENTRY_KEYS = {"depends_on", "blast_radius", "check"}
 
 _SECTION = re.compile(r"^##\s+(.+?)\s*$")
-_ITEM = re.compile(r"^- ([CD]\d+)\.\s")
-_FAILURE_ROW = re.compile(r"^\|\s*(F\d+)\s*\|([^|]*)\|([^|]*)\|\s*$")
+_ITEM = re.compile(r"^- ([CD]\d+)\.(.*)$")
+_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+_CELL_SEPARATOR = re.compile(r"(?<!\\)\|")
+_FAILURE_ID = re.compile(r"^F\d+$")
+_REJECTED = re.compile(r"rejected[\s:]*[^\s:]", re.IGNORECASE)
 _REFERENCE = re.compile(r"\b(?:[CD]\d+|\d+\.\d+)\b")
 
 
@@ -59,7 +62,7 @@ def _items(body: list[tuple[int, str]], prefix: str) -> list[tuple[int, str, str
     for lineno, line in body:
         match = _ITEM.match(line)
         if match and match.group(1).startswith(prefix):
-            items.append((lineno, match.group(1), line))
+            items.append((lineno, match.group(1), match.group(2)))
         elif items and line.startswith("  "):
             start, item_id, text = items[-1]
             items[-1] = (start, item_id, text + "\n" + line)
@@ -70,7 +73,9 @@ def _validate_design(path: Path, task_ids: set[str]) -> list[Problem]:
     file = path.name
     if not path.is_file():
         return [Problem(file, None, "missing (required by the critical-engineer schema)")]
-    sections = _sections(path.read_text().splitlines())
+    # Template placeholders are HTML comments; blank them, keeping line numbers.
+    text = _COMMENT.sub(lambda m: "\n" * m.group().count("\n"), path.read_text(encoding="utf-8"))
+    sections = _sections(text.splitlines())
     problems: list[Problem] = []
     for name in ("constraints", "failure modes", "decisions"):
         if name not in sections:
@@ -83,25 +88,32 @@ def _validate_design(path: Path, task_ids: set[str]) -> list[Problem]:
     for kind, items in (("constraints", constraints), ("decisions", decisions)):
         if kind in sections and not items:
             problems.append(Problem(file, None, f"no numbered {kind} (e.g. '- {kind[0].upper()}1. ...')"))
-        for lineno, item_id, _ in items:
+        for lineno, item_id, body in items:
             if item_id in defined:
                 problems.append(Problem(file, lineno, f"duplicate {item_id}"))
-            defined.add(item_id)
+            elif not body.split("\n", 1)[0].strip():
+                problems.append(Problem(file, lineno, f"{item_id} is empty"))
+            else:
+                defined.add(item_id)
 
-    for lineno, item_id, text in decisions:
-        if "rejected" not in text.lower():
+    for lineno, item_id, body in decisions:
+        if body.strip() and not _REJECTED.search(body):
             problems.append(Problem(file, lineno, f"{item_id} lists no rejected alternatives"))
 
-    rows = [
-        (lineno, match)
-        for lineno, line in sections.get("failure modes", [])
-        if (match := _FAILURE_ROW.match(line))
-    ]
+    rows = []
+    for lineno, line in sections.get("failure modes", []):
+        cells = _table_cells(line)
+        if cells and _FAILURE_ID.match(cells[0]):
+            if len(cells) == 3:
+                rows.append((lineno, cells))
+            else:
+                problems.append(
+                    Problem(file, lineno, f"{cells[0]} row has {len(cells)} cells, expected | ID | failure | mitigation |")
+                )
     if "failure modes" in sections and not rows:
         problems.append(Problem(file, None, "no failure mode rows (| F1 | failure | mitigation |)"))
     seen_f: set[str] = set()
-    for lineno, row in rows:
-        f_id, mitigation = row.group(1), row.group(3)
+    for lineno, (f_id, _, mitigation) in rows:
         if f_id in seen_f:
             problems.append(Problem(file, lineno, f"duplicate {f_id}"))
         seen_f.add(f_id)
@@ -113,12 +125,49 @@ def _validate_design(path: Path, task_ids: set[str]) -> list[Problem]:
     return problems
 
 
+def _table_cells(line: str) -> list[str] | None:
+    """Cells of a Markdown table row, honouring escaped pipes (``\\|``)."""
+    line = line.strip()
+    if not line.startswith("|"):
+        return None
+    cells = _CELL_SEPARATOR.split(line[1:])
+    if cells and not cells[-1].strip():
+        cells.pop()  # trailing pipe
+    return [c.strip() for c in cells]
+
+
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that rejects duplicate mapping keys instead of keeping the last."""
+
+
+def _construct_unique_mapping(loader, node, deep=False):
+    loader.flatten_mapping(node)
+    seen = set()
+    for key_node, _ in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        try:
+            duplicate = key in seen
+        except TypeError:  # unhashable; construct_mapping reports it
+            continue
+        if duplicate:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate key {key!r}", key_node.start_mark
+            )
+        seen.add(key)
+    return loader.construct_mapping(node, deep=deep)
+
+
+_UniqueKeyLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_unique_mapping
+)
+
+
 def _validate_ceo_yaml(path: Path, task_ids: set[str]) -> list[Problem]:
     file = path.name
     if not path.is_file():
         return [Problem(file, None, "missing")]
     try:
-        data = yaml.safe_load(path.read_text())
+        data = yaml.load(path.read_text(encoding="utf-8"), Loader=_UniqueKeyLoader)
     except yaml.YAMLError as exc:
         return [Problem(file, None, f"invalid YAML: {exc}")]
     entries = data.get("tasks") if isinstance(data, dict) else None

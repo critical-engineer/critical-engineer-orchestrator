@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from ceo.validate import main, validate_change
@@ -175,3 +177,54 @@ def test_main_exit_codes(change, capsys):
     assert main([str(change)]) == 1
     assert "blast_radius must be one of" in capsys.readouterr().out
     assert main([]) == 2
+
+
+# Review findings (CodeRabbit on #3)
+
+TEMPLATE_DESIGN = (
+    Path(__file__).parent.parent / "openspec/schemas/critical-engineer/templates/design.md"
+)
+
+
+def test_unfilled_design_template_fails(change):
+    (change / "design.md").write_text(TEMPLATE_DESIGN.read_text(encoding="utf-8"))
+    msgs = messages(change)
+    assert "C1 is empty" in msgs
+    assert "D1 is empty" in msgs
+    assert "F1 mitigation references no constraint, decision or task" in msgs
+
+
+def test_placeholder_rejected_does_not_count(change):
+    edit(change, "design.md", "  Rejected: trusting the worker's exit code (F1).", "  Rejected: <!-- alternative -->")
+    assert "D1 lists no rejected alternatives" in messages(change)
+
+
+def test_placeholder_reference_does_not_count(change):
+    edit(change, "design.md", "| C2 |", "| <!-- e.g. C2 --> |")
+    assert "F2 mitigation references no constraint, decision or task" in messages(change)
+
+
+def test_escaped_pipe_in_failure_row_is_still_checked(change):
+    edit(change, "design.md", "| F2 | Status drifts into the plan file | C2 |", "| F2 | a \\| b fails | be careful |")
+    assert "F2 mitigation references no constraint, decision or task" in messages(change)
+
+
+def test_unparseable_failure_row_is_reported(change):
+    edit(change, "design.md", "| F2 | Status drifts into the plan file | C2 |", "| F2 | a | b | C2 |")
+    assert "F2 row has 4 cells, expected | ID | failure | mitigation |" in messages(change)
+
+
+def test_duplicate_task_key_in_ceo_yaml(change):
+    edit(change, "ceo.yaml", '  "1.2":', '  "1.1": {depends_on: [], blast_radius: low, check: "true"}\n  "1.2":')
+    msgs = messages(change)
+    assert len(msgs) == 1 and "duplicate key '1.1'" in msgs[0]
+
+
+def test_duplicate_nested_key_in_ceo_yaml(change):
+    edit(change, "ceo.yaml", "blast_radius: low,", "blast_radius: low, blast_radius: high,")
+    assert any("duplicate key 'blast_radius'" in m for m in messages(change))
+
+
+def test_non_ascii_content(change):
+    edit(change, "tasks.md", "Sync tasks", "Synchronise tâches → ledger")
+    assert validate_change(change) == []

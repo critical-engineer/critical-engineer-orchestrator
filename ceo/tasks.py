@@ -58,4 +58,4 @@ def parse_tasks(text: str, file: str = "tasks.md") -> tuple[list[Task], list[Pro
 
 
 def load_tasks(path: Path) -> tuple[list[Task], list[Problem]]:
-    return parse_tasks(path.read_text(), file=path.name)
+    return parse_tasks(path.read_text(encoding="utf-8"), file=path.name)
