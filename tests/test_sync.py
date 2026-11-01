@@ -202,3 +202,15 @@ def test_failure_mid_sync_rolls_everything_back(conn, change, monkeypatch):
     with pytest.raises(RuntimeError):
         sync_change(conn, REPO, change)
     assert (tasks(conn), event_kinds(conn)) == before
+
+
+def test_task_without_stored_definition_gets_a_baseline(conn, change):
+    sync_change(conn, REPO, change)
+    conn.execute("UPDATE tasks SET definition_hash = NULL, status = 'completed', attempts = 1")
+    conn.commit()  # as if migrated from a v1 ledger
+    result = sync_change(conn, REPO, change)
+    assert (result.changed, result.flagged) == ([], [])
+    assert tasks(conn) == {"1.1": ("completed", 0), "1.2": ("completed", 0)}
+    assert event_kinds(conn)[-3:] == ["task.baselined", "task.baselined", "plan.synced"]
+    write_change(change, {"1.1": "Changed after baseline", "1.2": "Sync tasks"})
+    assert sync_change(conn, REPO, change).flagged == ["1.1"]  # changes are caught from here on

@@ -5,7 +5,9 @@ Only a change that passes the CE validator is synced. In one transaction:
 - new task labels are inserted as ``pending``;
 - labels gone from ``tasks.md`` are tombstoned (never deleted, never reused);
 - a task whose definition changed is updated; if it had already run, it is
-  set to ``blocked`` so a human decides what its earlier evidence is worth (F9).
+  set to ``blocked`` so a human decides what its earlier evidence is worth (F9);
+- a task with no stored definition (migrated ledger) gets a baseline, recorded
+  as ``task.baselined``, rather than being treated as changed.
 
 A definition is the task's description plus its ``ceo.yaml`` entry. Checkbox
 state in ``tasks.md`` is ignored: the ledger, not the plan, holds status (C7).
@@ -88,6 +90,14 @@ def sync_change(conn: sqlite3.Connection, repo: str, change_dir: Path) -> SyncRe
                 )
                 append_event(conn, "task.added", plan_id=plan_id, task_id=task.id)
                 result.added.append(task.id)
+            elif row["definition_hash"] is None:
+                # Migrated from a ledger without hashes: there is no earlier
+                # definition to compare with, so record a baseline, visibly.
+                conn.execute(
+                    "UPDATE tasks SET definition_hash = ? WHERE plan_id = ? AND id = ?",
+                    (new_hash, plan_id, task.id),
+                )
+                append_event(conn, "task.baselined", plan_id=plan_id, task_id=task.id)
             elif row["definition_hash"] != new_hash:
                 has_run = row["attempts"] > 0 or row["status"] != "pending"
                 new_status = "blocked" if has_run else row["status"]
