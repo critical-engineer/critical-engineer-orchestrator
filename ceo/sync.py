@@ -7,7 +7,8 @@ Only a change that passes the CE validator is synced. In one transaction:
 - a task whose definition changed is updated; if it had already run, it is
   set to ``blocked`` so a human decides what its earlier evidence is worth (F9);
 - a task with no stored definition (migrated ledger) gets a baseline, recorded
-  as ``task.baselined``, rather than being treated as changed.
+  as ``task.baselined``; if it had already run it is also set to ``blocked``,
+  because its evidence was never checked against this definition (G3).
 
 A definition is the task's description plus its ``ceo.yaml`` entry. Checkbox
 state in ``tasks.md`` is ignored: the ledger, not the plan, holds status (C7).
@@ -37,6 +38,7 @@ class SyncResult:
     removed: list[str] = field(default_factory=list)
     changed: list[str] = field(default_factory=list)
     flagged: list[str] = field(default_factory=list)  # changed after running
+    baselined: list[str] = field(default_factory=list)  # migrated without a definition
 
 
 def definition_hash(task: Task, entry: dict) -> str:
@@ -92,12 +94,22 @@ def sync_change(conn: sqlite3.Connection, repo: str, change_dir: Path) -> SyncRe
                 result.added.append(task.id)
             elif row["definition_hash"] is None:
                 # Migrated from a ledger without hashes: there is no earlier
-                # definition to compare with, so record a baseline, visibly.
+                # definition to compare with. Not evidence of a change, but a
+                # task that already ran was never verified against *this*
+                # definition, so it goes to a human like a changed one (G3).
+                has_run = row["attempts"] > 0 or row["status"] != "pending"
                 conn.execute(
-                    "UPDATE tasks SET definition_hash = ? WHERE plan_id = ? AND id = ?",
-                    (new_hash, plan_id, task.id),
+                    "UPDATE tasks SET definition_hash = ?, status = ? WHERE plan_id = ? AND id = ?",
+                    (new_hash, "blocked" if has_run else row["status"], plan_id, task.id),
                 )
-                append_event(conn, "task.baselined", plan_id=plan_id, task_id=task.id)
+                append_event(
+                    conn,
+                    "task.baselined",
+                    plan_id=plan_id,
+                    task_id=task.id,
+                    detail={"needs_review": has_run, "previous_status": row["status"]},
+                )
+                result.baselined.append(task.id)
             elif row["definition_hash"] != new_hash:
                 has_run = row["attempts"] > 0 or row["status"] != "pending"
                 new_status = "blocked" if has_run else row["status"]
@@ -143,6 +155,7 @@ def sync_change(conn: sqlite3.Connection, repo: str, change_dir: Path) -> SyncRe
                 "removed": result.removed,
                 "changed": result.changed,
                 "flagged": result.flagged,
+                "baselined": result.baselined,
             },
         )
     return result

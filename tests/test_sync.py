@@ -206,11 +206,21 @@ def test_failure_mid_sync_rolls_everything_back(conn, change, monkeypatch):
 
 def test_task_without_stored_definition_gets_a_baseline(conn, change):
     sync_change(conn, REPO, change)
-    conn.execute("UPDATE tasks SET definition_hash = NULL, status = 'completed', attempts = 1")
-    conn.commit()  # as if migrated from a v1 ledger
+    # As if migrated from a v1 ledger: 1.1 already ran, 1.2 never did.
+    conn.execute("UPDATE tasks SET definition_hash = NULL")
+    conn.execute("UPDATE tasks SET status = 'completed', attempts = 1 WHERE id = '1.1'")
+    conn.commit()
     result = sync_change(conn, REPO, change)
-    assert (result.changed, result.flagged) == ([], [])
-    assert tasks(conn) == {"1.1": ("completed", 0), "1.2": ("completed", 0)}
-    assert event_kinds(conn)[-3:] == ["task.baselined", "task.baselined", "plan.synced"]
-    write_change(change, {"1.1": "Changed after baseline", "1.2": "Sync tasks"})
-    assert sync_change(conn, REPO, change).flagged == ["1.1"]  # changes are caught from here on
+    assert (result.baselined, result.changed, result.flagged) == (["1.1", "1.2"], [], [])
+    # A task that ran was never verified against this definition: review it (G3).
+    assert tasks(conn) == {"1.1": ("blocked", 0), "1.2": ("pending", 0)}
+    details = [
+        json.loads(r["detail"])
+        for r in conn.execute("SELECT detail FROM events WHERE kind = 'task.baselined' ORDER BY id")
+    ]
+    assert details == [
+        {"needs_review": True, "previous_status": "completed"},
+        {"needs_review": False, "previous_status": "pending"},
+    ]
+    write_change(change, {"1.1": "Create schema", "1.2": "Changed after baseline"})
+    assert sync_change(conn, REPO, change).changed == ["1.2"]  # changes are caught from here on
