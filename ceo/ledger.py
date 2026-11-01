@@ -84,19 +84,50 @@ class LedgerError(Exception):
     pass
 
 
+def _statements(script: str) -> list[str]:
+    """Split a SQL script into statements (trigger bodies contain ';')."""
+    statements, current = [], ""
+    for part in script.split(";"):
+        current += part + ";"
+        if sqlite3.complete_statement(current):
+            statements.append(current.strip())
+            current = ""
+    return [s for s in statements if s != ";"]
+
+
+def _initialise(path: str | Path) -> None:
+    """Create the schema if needed, atomically.
+
+    The version check and the DDL run in one write transaction, so a failure
+    leaves an empty file and concurrent openers can't both create tables.
+    ``executescript()`` is avoided because it commits any open transaction.
+    """
+    conn = sqlite3.connect(path, isolation_level=None, timeout=30)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version == 0:
+                for statement in _statements(_SCHEMA):
+                    conn.execute(statement)
+            elif version != SCHEMA_VERSION:
+                raise LedgerError(
+                    f"ledger schema version {version}, this code expects {SCHEMA_VERSION}"
+                )
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+
 def open_ledger(path: str | Path) -> sqlite3.Connection:
     """Open the ledger at ``path``, creating the schema if the file is new."""
+    _initialise(path)
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if version == 0:
-        conn.executescript(_SCHEMA)
-    elif version != SCHEMA_VERSION:
-        conn.close()
-        raise LedgerError(
-            f"ledger schema version {version}, this code expects {SCHEMA_VERSION}"
-        )
     return conn
 
 

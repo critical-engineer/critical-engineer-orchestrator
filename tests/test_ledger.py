@@ -1,8 +1,10 @@
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from ceo import ledger
 from ceo.ledger import SCHEMA_VERSION, LedgerError, open_ledger, record_event
 
 
@@ -51,6 +53,35 @@ def test_refuses_unknown_schema_version(tmp_path):
     c.close()
     with pytest.raises(LedgerError):
         open_ledger(path)
+
+
+def test_failed_initialisation_leaves_no_partial_schema(tmp_path, monkeypatch):
+    path = tmp_path / "ledger.db"
+    good = ledger._SCHEMA
+    monkeypatch.setattr(ledger, "_SCHEMA", good.replace("CREATE TABLE runs", "CREATE TABLE runs bad syntax"))
+    with pytest.raises(sqlite3.OperationalError):
+        open_ledger(path)
+    c = sqlite3.connect(path)
+    assert c.execute("PRAGMA user_version").fetchone()[0] == 0
+    assert c.execute("SELECT count(*) FROM sqlite_master").fetchone()[0] == 0
+    c.close()
+    monkeypatch.setattr(ledger, "_SCHEMA", good)
+    open_ledger(path).close()  # a later open succeeds
+
+
+def test_concurrent_first_opens(tmp_path):
+    path = tmp_path / "ledger.db"
+
+    def open_and_read_version(_):
+        c = open_ledger(path)
+        try:
+            return c.execute("PRAGMA user_version").fetchone()[0]
+        finally:
+            c.close()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        versions = list(pool.map(open_and_read_version, range(8)))
+    assert versions == [SCHEMA_VERSION] * 8
 
 
 def test_plan_change_is_unique_per_repo(conn, plan_id):
