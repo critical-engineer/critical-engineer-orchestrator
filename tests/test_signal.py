@@ -88,10 +88,29 @@ def test_config_requires_numbers():
         SignalConfig.from_env({"CEO_SIGNAL_BOT_NUMBER": BOT})
 
 
-@pytest.mark.parametrize("number", ["07700900002", "+44 7700 900002", "+0123456789", ""])
+@pytest.mark.parametrize(
+    "number",
+    ["07700900002", "+44 7700 900002", "+0123456789", "", "+447700900002\n", "+４４7700900002"],
+)
 def test_config_rejects_non_e164(number):
     with pytest.raises(SignalError, match="E.164"):
         SignalConfig("http://x", BOT, number)
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://127.0.0.1:9922", "http://localhost:9922", "http://[::1]:9922", "https://signal.example"],
+)
+def test_config_accepts_loopback_or_https(url):
+    env = {"CEO_SIGNAL_API_URL": url, "CEO_SIGNAL_BOT_NUMBER": BOT, "CEO_SIGNAL_HUMAN_NUMBER": HUMAN}
+    assert SignalConfig.from_env(env).api_url == url
+
+
+@pytest.mark.parametrize("url", ["http://192.168.1.10:9922", "http://media-box.local:9922", "ftp://127.0.0.1"])
+def test_config_rejects_plain_http_off_the_box(url):
+    env = {"CEO_SIGNAL_API_URL": url, "CEO_SIGNAL_BOT_NUMBER": BOT, "CEO_SIGNAL_HUMAN_NUMBER": HUMAN}
+    with pytest.raises(SignalError, match="https"):
+        SignalConfig.from_env(env)
 
 
 def test_bot_needs_its_own_number():
@@ -144,6 +163,11 @@ def test_format_rejects_bad_arguments(kwargs):
         format_notification(summary="x", **kwargs)
 
 
+def test_long_header_fields_are_bounded():
+    message = format_notification("blocked", "x" * 5000, plan="p" * 5000, task_id="t" * 5000)
+    assert len(message) <= MAX_LENGTH
+
+
 def test_long_messages_are_truncated_but_keep_the_reply_line():
     message = format_notification("question", "x" * 10_000, question_id=12)
     assert len(message) <= MAX_LENGTH
@@ -157,7 +181,16 @@ def test_long_messages_are_truncated_but_keep_the_reply_line():
 def test_notify_sends_and_records(api, conn, config):
     message = notify(conn, config, "done", "All checks passed.", task_id="1.1")
     assert api.requests[0][1]["message"] == message
-    assert events(conn) == [("notify.done", "1.1", {"message": message})]
+    assert events(conn) == [
+        ("notify.done", "1.1", {"message": message, "summary": "All checks passed."})
+    ]
+
+
+def test_full_summary_is_kept_in_the_ledger_when_truncated(api, conn, config):
+    summary = "y" * 5000
+    message = notify(conn, config, "done", summary)
+    [(_, _, detail)] = events(conn)
+    assert len(message) < len(summary) and detail["summary"] == summary
 
 
 def test_failed_notify_is_recorded_and_raised(api, conn, config):

@@ -6,17 +6,19 @@ recipient comes from configuration, never from a caller. Every notification
 is recorded in the ledger, including failed sends.
 
 Configuration (environment):
-  CEO_SIGNAL_API_URL       default http://127.0.0.1:9922
+  CEO_SIGNAL_API_URL       default http://127.0.0.1:9922; must be https unless loopback
   CEO_SIGNAL_BOT_NUMBER    the bot's registered number, e.g. +447700900000
   CEO_SIGNAL_HUMAN_NUMBER  the human's number (the only recipient)
 """
 
+import ipaddress
 import json
 import os
 import re
 import sqlite3
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 
 from ceo.ledger import record_event
@@ -25,8 +27,9 @@ NOTIFICATION_KINDS = ("critic-ready", "blocked", "question", "done")
 
 # Keep messages readable on a phone; full detail lives in the ledger and on GitHub.
 MAX_LENGTH = 2000
+_MAX_LABEL = 80  # plan name / task ID in the header
 
-_PHONE_NUMBER = re.compile(r"^\+[1-9]\d{6,14}$")  # E.164
+_PHONE_NUMBER = re.compile(r"\+[1-9][0-9]{6,14}")  # E.164, ASCII digits; use fullmatch
 
 
 class SignalError(Exception):
@@ -41,7 +44,7 @@ class SignalConfig:
 
     def __post_init__(self):
         for name in ("bot_number", "human_number"):
-            if not _PHONE_NUMBER.match(getattr(self, name)):
+            if not _PHONE_NUMBER.fullmatch(getattr(self, name)):
                 raise SignalError(f"{name} must be in E.164 format, e.g. +447700900000")
         if self.bot_number == self.human_number:
             raise SignalError("the bot needs its own number, not the human's (OQ1)")
@@ -54,11 +57,32 @@ class SignalConfig:
         ]
         if missing:
             raise SignalError(f"not set: {', '.join(missing)}")
+        api_url = env.get("CEO_SIGNAL_API_URL", "http://127.0.0.1:9922").rstrip("/")
+        _check_transport(api_url)
         return cls(
-            api_url=env.get("CEO_SIGNAL_API_URL", "http://127.0.0.1:9922").rstrip("/"),
+            api_url=api_url,
             bot_number=env["CEO_SIGNAL_BOT_NUMBER"],
             human_number=env["CEO_SIGNAL_HUMAN_NUMBER"],
         )
+
+
+def _is_loopback(host: str | None) -> bool:
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host or "").is_loopback
+    except ValueError:
+        return False
+
+
+def _check_transport(api_url: str) -> None:
+    """Messages and phone numbers must not cross the network unencrypted."""
+    parts = urlsplit(api_url)
+    if parts.scheme == "https":
+        return
+    if parts.scheme == "http" and _is_loopback(parts.hostname):
+        return
+    raise SignalError(f"CEO_SIGNAL_API_URL must use https unless it is loopback: {api_url}")
 
 
 def send(config: SignalConfig, message: str, *, timeout: float = 30) -> None:
@@ -96,15 +120,17 @@ def format_notification(
         raise ValueError("question_id is required for, and only for, questions")
     header = f"[CEO] {kind}"
     if plan:
-        header += f" · {plan}"
+        header += f" · {_clip(plan, _MAX_LABEL)}"
     if task_id:
-        header += f" · task {task_id}"
+        header += f" · task {_clip(task_id, _MAX_LABEL)}"
     footer = f"\n\nReply: Q{question_id} <answer>" if question_id is not None else ""
     body = summary.strip()
     room = MAX_LENGTH - len(header) - len(footer) - 2
-    if len(body) > room:
-        body = body[: room - 1].rstrip() + "…"
-    return f"{header}\n\n{body}{footer}"
+    return f"{header}\n\n{_clip(body, room)}{footer}"
+
+
+def _clip(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1].rstrip() + "…"
 
 
 def notify(
@@ -130,7 +156,7 @@ def notify(
             "notify.failed",
             plan_id=plan_id,
             task_id=task_id,
-            detail={"kind": kind, "message": message, "error": str(exc)},
+            detail={"kind": kind, "message": message, "summary": summary, "error": str(exc)},
         )
         raise
     record_event(
@@ -138,6 +164,6 @@ def notify(
         f"notify.{kind}",
         plan_id=plan_id,
         task_id=task_id,
-        detail={"message": message},
+        detail={"message": message, "summary": summary},
     )
     return message
