@@ -222,3 +222,4 @@ Remaining CEO improvements are run through CEO itself. Then the first external p
 - OQ8. ~~Does OpenSpec's JSON output expose task-level detail?~~ Answered by T0: yes (`instructions apply --json`), but task IDs are positional (R4). Still open: is `docs/agent-contract.md` a stable interface for programs?
 - OQ9. ~~Where status lives~~ Resolved with D10: the ledger holds execution status (C7); checkboxes are ticked only by the orchestrator at archive, so the archived change records what was done.
 - OQ10. Research tasks (like T0) have checks that prove a file exists, not that its findings are right. Should they always require human sign-off regardless of blast_radius?
+- OQ11. Matrix end-to-end encryption, after the POC: a vodozemac-backed Python library or an encrypting proxy (pantalaimon)? libolm is deprecated (July 2024) and python-olm wheels reportedly stop at CPython 3.12. Deferred by D11; needs a dependency decision (C2) and a backed-up key store.
