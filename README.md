@@ -68,7 +68,9 @@ export OPENSPEC_TELEMETRY=0          # OpenSpec telemetry is on by default
 python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
 .venv/bin/python -m pytest
 tools/node_modules/.bin/openspec schema validate critical-engineer
-.venv/bin/python -m ceo.validate openspec/changes/<change>   # check a plan
+# check a plan: OpenSpec's own validation first, then the CE validator
+tools/node_modules/.bin/openspec validate <change> --strict
+.venv/bin/python -m ceo.validate openspec/changes/<change>
 ```
 
 ## Layout
