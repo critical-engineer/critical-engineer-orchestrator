@@ -14,7 +14,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 
-from ceo.notify import ChannelError, check_transport
+from ceo.notify import ChannelError, check_transport, open_url
 
 _PHONE_NUMBER = re.compile(r"\+[1-9][0-9]{6,14}")  # E.164, ASCII digits; use fullmatch
 
@@ -58,9 +58,8 @@ class SignalChannel:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout):
-                pass
+            open_url(request, self.timeout)
         except urllib.error.HTTPError as exc:
             raise ChannelError(f"send failed: HTTP {exc.code}") from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
+        except ChannelError as exc:
             raise ChannelError(f"send failed: {exc}") from exc

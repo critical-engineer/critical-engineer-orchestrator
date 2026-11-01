@@ -26,7 +26,7 @@ import uuid
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
-from ceo.notify import ChannelError, channel_from_env, check_transport
+from ceo.notify import ChannelError, channel_from_env, check_transport, open_url
 
 _USER_ID = re.compile(r"@[^:\s]+:\S+")
 _ROOM_ID = re.compile(r"![^\s/]+")
@@ -76,24 +76,35 @@ class MatrixChannel:
             method=method,
         )
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                return json.loads(response.read() or b"{}")
+            raw = open_url(request, self.timeout)
         except urllib.error.HTTPError as exc:
             try:
                 errcode = json.loads(exc.read()).get("errcode", "")
-            except ValueError:
+            except (OSError, ValueError, AttributeError):
                 errcode = ""
             raise MatrixHTTPError(method, path, exc.code, errcode) from exc
-        except (urllib.error.URLError, TimeoutError) as exc:
-            raise ChannelError(f"{method} {path}: {exc}") from exc
+        try:
+            data = json.loads(raw or b"{}")
+        except ValueError as exc:
+            raise ChannelError(f"{method} {path}: response is not JSON") from exc
+        if not isinstance(data, dict):
+            raise ChannelError(f"{method} {path}: unexpected response")
+        return data
+
+    def _field(self, data: dict, key: str, kind: type):
+        value = data.get(key)
+        if not isinstance(value, kind):
+            raise ChannelError(f"unexpected response: missing {key!r}")
+        return value
 
     def bot_id(self) -> str:
-        return self._request("GET", "/account/whoami")["user_id"]
+        return self._field(self._request("GET", "/account/whoami"), "user_id", str)
 
     def verify_room(self) -> None:
         """The room must hold exactly the bot and the human, and not be encrypted."""
         bot = self.bot_id()
-        members = set(self._request("GET", f"/rooms/{self._room}/joined_members")["joined"])
+        joined = self._request("GET", f"/rooms/{self._room}/joined_members")
+        members = set(self._field(joined, "joined", dict))
         if members != {bot, self.human_id}:
             raise ChannelError(
                 f"room must contain only {bot} and {self.human_id}; found {', '.join(sorted(members))}"

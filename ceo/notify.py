@@ -10,9 +10,12 @@ Configuration (environment):
   CEO_CHANNEL   "matrix" (default) or "signal"; see each channel for its settings
 """
 
+import http.client
 import ipaddress
 import os
 import sqlite3
+import urllib.error
+import urllib.request
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -57,6 +60,33 @@ def check_transport(url: str, setting: str) -> None:
     if parts.scheme == "http" and _is_loopback(parts.hostname):
         return
     raise ChannelError(f"{setting} must use https unless it is loopback: {url}")
+
+
+class _NoRedirects(urllib.request.HTTPRedirectHandler):
+    """Never follow redirects: a token or message text would follow them to a
+    host that check_transport() never saw. A redirect becomes an HTTPError."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirects)
+
+
+def open_url(request: urllib.request.Request, timeout: float) -> bytes:
+    """Send ``request`` without following redirects and return the body.
+
+    A non-2xx response (including 3xx) raises ``urllib.error.HTTPError``; any
+    other transport failure, including a dropped connection, raises
+    ``ChannelError``.
+    """
+    try:
+        with _OPENER.open(request, timeout=timeout) as response:
+            return response.read()
+    except urllib.error.HTTPError:
+        raise
+    except (OSError, http.client.HTTPException) as exc:
+        raise ChannelError(f"{request.get_method()} {urlsplit(request.full_url).path}: {exc}") from exc
 
 
 def _is_loopback(host: str | None) -> bool:

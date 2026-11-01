@@ -1,5 +1,5 @@
 import pytest
-from fake_http import FakeHttpApi
+from fake_http import DROP, FakeHttpApi
 
 from ceo.channels import matrix
 from ceo.channels.matrix import MatrixChannel
@@ -177,3 +177,62 @@ def test_cli_reports_errors(api, monkeypatch, capsys):
     assert matrix.main(["check"]) == 1
     assert "room must contain only" in capsys.readouterr().err
     assert matrix.main(["nope"]) == 2
+
+
+# transport hardening (CodeRabbit review on #5)
+
+
+@pytest.fixture
+def elsewhere():
+    fake = FakeHttpApi()
+    fake.routes[("GET", "/")] = (200, {"user_id": BOT})
+    yield fake
+    fake.close()
+
+
+def test_redirects_are_not_followed_and_the_token_stays_put(api, channel, elsewhere):
+    api.routes[("GET", f"{API}/account/whoami")] = (
+        302, {}, {"Location": f"{elsewhere.url}/steal"},
+    )
+    with pytest.raises(ChannelError, match="HTTP 302"):
+        channel.send("hello")
+    assert elsewhere.requests == []
+    assert sends(api) == []
+
+
+def test_non_json_response_is_a_channel_error(api, channel):
+    api.routes[("GET", f"{API}/account/whoami")] = (200, b"<html>captive portal</html>")
+    with pytest.raises(ChannelError, match="not JSON"):
+        channel.send("hello")
+
+
+def test_dropped_connection_is_a_channel_error(api, channel):
+    api.routes[("GET", f"{API}/account/whoami")] = DROP
+    with pytest.raises(ChannelError):
+        channel.send("hello")
+
+
+@pytest.mark.parametrize(
+    "route, body",
+    [
+        (f"{API}/account/whoami", {}),
+        (f"{API}/account/whoami", []),
+        (f"{API}/rooms/{ROOM}/joined_members", {"joined": ["not", "a", "dict"]}),
+    ],
+)
+def test_unexpected_response_shape_is_a_channel_error(api, channel, route, body):
+    api.routes[("GET", route)] = (200, body)
+    with pytest.raises(ChannelError, match="unexpected response"):
+        channel.send("hello")
+
+
+def test_transport_failure_is_recorded_by_notify(api, channel, tmp_path):
+    from ceo.ledger import open_ledger
+    from ceo.notify import notify
+
+    api.routes[("GET", f"{API}/account/whoami")] = DROP
+    conn = open_ledger(tmp_path / "ledger.db")
+    with pytest.raises(ChannelError):
+        notify(conn, channel, "done", "x")
+    assert [r[0] for r in conn.execute("SELECT kind FROM events")] == ["notify.failed"]
+    conn.close()

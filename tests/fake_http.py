@@ -1,9 +1,16 @@
-"""A tiny local HTTP server for channel tests. Routes map (method, path) to (status, json)."""
+"""A tiny local HTTP server for channel tests.
+
+Routes map (method, path prefix) to (status, body[, headers]). A dict body is
+sent as JSON, bytes as-is; the response DROP closes the connection unanswered.
+"""
 
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import unquote
+
+
+DROP = object()
 
 
 class FakeHttpApi:
@@ -22,11 +29,17 @@ class FakeHttpApi:
                 api.requests.append(
                     (self.command, path, dict(self.headers), json.loads(raw) if raw else None)
                 )
-                status, body = api.route(self.command, path)
-                payload = json.dumps(body).encode()
+                response = api.route(self.command, path)
+                if response is DROP:
+                    self.close_connection = True
+                    return
+                status, body, *rest = response
+                payload = body if isinstance(body, bytes) else json.dumps(body).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
+                for name, value in (rest[0] if rest else {}).items():
+                    self.send_header(name, value)
                 self.end_headers()
                 self.wfile.write(payload)
 

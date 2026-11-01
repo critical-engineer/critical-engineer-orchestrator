@@ -1,5 +1,5 @@
 import pytest
-from fake_http import FakeHttpApi
+from fake_http import DROP, FakeHttpApi
 
 from ceo.channels.signal_api import SignalChannel
 from ceo.notify import ChannelError
@@ -71,5 +71,22 @@ def test_send_raises_on_http_error(api, channel):
 
 def test_send_raises_when_api_unreachable(api, channel):
     api.close()
+    with pytest.raises(ChannelError, match="send failed"):
+        channel.send("hello")
+
+
+def test_redirects_are_not_followed(api, channel):
+    other = FakeHttpApi()
+    try:
+        api.routes[("POST", "/v2/send")] = (303, {}, {"Location": f"{other.url}/v2/send"})
+        with pytest.raises(ChannelError, match="HTTP 303"):
+            channel.send("hello")
+        assert other.requests == []
+    finally:
+        other.close()
+
+
+def test_dropped_connection_is_a_channel_error(api, channel):
+    api.routes[("POST", "/v2/send")] = DROP
     with pytest.raises(ChannelError, match="send failed"):
         channel.send("hello")
