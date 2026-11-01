@@ -102,13 +102,26 @@ class MatrixChannel:
         return self._field(self._request("GET", "/account/whoami"), "user_id", str)
 
     def verify_room(self) -> None:
-        """The room must hold exactly the bot and the human, and not be encrypted."""
+        """Refuse to send unless the room is private to the bot and the human.
+
+        Exactly two members; invite-only; history readable only by members
+        from when they were invited (so a later joiner, or the world, can't
+        read earlier notifications); and not encrypted (the POC bot can't).
+        """
         bot = self.bot_id()
         joined = self._request("GET", f"/rooms/{self._room}/joined_members")
         members = set(self._field(joined, "joined", dict))
         if members != {bot, self.human_id}:
             raise ChannelError(
                 f"room must contain only {bot} and {self.human_id}; found {', '.join(sorted(members))}"
+            )
+        join_rule = self._state("m.room.join_rules", "join_rule")
+        if join_rule != "invite":
+            raise ChannelError(f"room must be invite-only; join rule is {join_rule!r}")
+        history = self._state("m.room.history_visibility", "history_visibility")
+        if history not in ("invited", "joined"):
+            raise ChannelError(
+                f"room history must be visible to members only ('invited' or 'joined'); it is {history!r}"
             )
         try:
             self._request("GET", f"/rooms/{self._room}/state/m.room.encryption")
@@ -117,6 +130,15 @@ class MatrixChannel:
                 return
             raise
         raise ChannelError("room is end-to-end encrypted; the POC bot can't encrypt (D11)")
+
+    def _state(self, event_type: str, key: str) -> str | None:
+        """A room state value; None if the event is absent (Matrix defaults are too open)."""
+        try:
+            return self._request("GET", f"/rooms/{self._room}/state/{event_type}").get(key)
+        except MatrixHTTPError as exc:
+            if exc.status == 404:
+                return None
+            raise
 
     def send(self, message: str) -> None:
         self.verify_room()

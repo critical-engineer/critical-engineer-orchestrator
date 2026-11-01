@@ -24,6 +24,12 @@ def api():
             ("GET", f"{API}/rooms/{ROOM}/state/m.room.encryption"): (
                 404, {"errcode": "M_NOT_FOUND"},
             ),
+            ("GET", f"{API}/rooms/{ROOM}/state/m.room.join_rules"): (
+                200, {"join_rule": "invite"},
+            ),
+            ("GET", f"{API}/rooms/{ROOM}/state/m.room.history_visibility"): (
+                200, {"history_visibility": "invited"},
+            ),
             ("PUT", f"{API}/rooms/{ROOM}/send/m.room.message/"): (200, {"event_id": "$e"}),
             ("POST", f"{API}/join/{ROOM}"): (200, {"room_id": ROOM}),
         }
@@ -252,3 +258,57 @@ def test_cli_runs_as_a_module(api):
     )
     assert result.returncode == 0, result.stderr
     assert "ok: room verified" in result.stdout
+
+
+# room privacy (CodeRabbit review on #5)
+
+
+@pytest.mark.parametrize("visibility", ["invited", "joined"])
+def test_member_only_history_is_accepted(api, channel, visibility):
+    api.routes[("GET", f"{API}/rooms/{ROOM}/state/m.room.history_visibility")] = (
+        200, {"history_visibility": visibility},
+    )
+    channel.send("hello")
+    assert len(sends(api)) == 1
+
+
+@pytest.mark.parametrize(
+    "response, message",
+    [
+        ((200, {"history_visibility": "shared"}), "'shared'"),
+        ((200, {"history_visibility": "world_readable"}), "'world_readable'"),
+        ((404, {"errcode": "M_NOT_FOUND"}), "None"),  # absent means 'shared'
+    ],
+)
+def test_history_readable_beyond_members_is_refused(api, channel, response, message):
+    api.routes[("GET", f"{API}/rooms/{ROOM}/state/m.room.history_visibility")] = response
+    with pytest.raises(ChannelError, match=f"members only.*{message}"):
+        channel.send("hello")
+    assert sends(api) == []
+
+
+@pytest.mark.parametrize(
+    "response", [(200, {"join_rule": "public"}), (200, {"join_rule": "knock"}), (404, {})]
+)
+def test_room_that_is_not_invite_only_is_refused(api, channel, response):
+    api.routes[("GET", f"{API}/rooms/{ROOM}/state/m.room.join_rules")] = response
+    with pytest.raises(ChannelError, match="invite-only"):
+        channel.send("hello")
+    assert sends(api) == []
+
+
+# proxies (CodeRabbit review on #5)
+
+
+def test_loopback_requests_bypass_an_environment_proxy(api, channel, monkeypatch):
+    proxy = FakeHttpApi()
+    try:
+        monkeypatch.setenv("http_proxy", proxy.url)
+        monkeypatch.setenv("HTTP_PROXY", proxy.url)
+        monkeypatch.delenv("no_proxy", raising=False)
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        channel.send("hello")
+        assert proxy.requests == []
+        assert len(sends(api)) == 1
+    finally:
+        proxy.close()

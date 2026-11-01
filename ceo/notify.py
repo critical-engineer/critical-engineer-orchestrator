@@ -70,7 +70,14 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
         return None
 
 
-_OPENER = urllib.request.build_opener(_NoRedirects)
+class _DirectToLoopback(urllib.request.ProxyHandler):
+    """Never send loopback requests through an environment proxy (http_proxy):
+    the token or message text would cross the network in clear text."""
+
+    def proxy_open(self, req, proxy, type):
+        if _is_loopback(urlsplit(req.full_url).hostname):
+            return None  # fall through to a direct connection
+        return super().proxy_open(req, proxy, type)
 
 
 def open_url(request: urllib.request.Request, timeout: float) -> bytes:
@@ -81,7 +88,9 @@ def open_url(request: urllib.request.Request, timeout: float) -> bytes:
     ``ChannelError``.
     """
     try:
-        with _OPENER.open(request, timeout=timeout) as response:
+        # Built per call so proxy settings are read from the current environment.
+        opener = urllib.request.build_opener(_DirectToLoopback, _NoRedirects)
+        with opener.open(request, timeout=timeout) as response:
             return response.read()
     except urllib.error.HTTPError:
         raise
