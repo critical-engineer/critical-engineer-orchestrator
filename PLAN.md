@@ -123,7 +123,7 @@ Tables: plans (repo, approved_sha), tasks (id, plan_id, status, attempts, tombst
 ```yaml
 depends_on: [T1]
 blast_radius: low
-check: python -m pytest tests/test_parser.py
+check: python -m pytest tests/test_parser.py tests/test_validate.py
 ```
 Rescoped by T0. (a) Task-label parser: reads `X.Y` labels from `tasks.md` (or from `openspec instructions apply --json` descriptions), rejects duplicate or missing labels. (b) CE validator, run after `openspec validate --strict`: design has Constraints / Failure Modes / Decisions sections, every decision lists rejected alternatives, `ceo.yaml` keys match task labels one-to-one, every task has a `check`. Fixtures cover malformed changes.
 
