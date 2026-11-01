@@ -151,7 +151,7 @@ depends_on: [T2]
 blast_radius: low
 check: python -m pytest tests/test_signal.py   # plus a manual check: message arrives on phone
 ```
-`/v2/send` to the allowlisted human. Event types: critic-ready, blocked, question, done.
+`/v2/send` to the allowlisted human from the bot's own number (OQ1). Event types: critic-ready, blocked, question, done. Implemented in `ceo/notify.py`.
 
 ### T7: Signal inbound answers
 ```yaml
@@ -208,7 +208,7 @@ Remaining CEO improvements are run through CEO itself. Then the first external p
 
 ## 8. Open questions
 
-- OQ1. Bot Signal identity: a separate number (which number types does Signal accept for registration?) vs. a linked device on the personal account (gives the bot access to all personal messages, so not preferred).
+- OQ1. ~~Bot Signal identity~~ Resolved 2026-11-01: a separate number registered as the bot's own Signal account, so the bot can't read personal messages (F7). Still open: which number type Signal accepts for registration (e.g. prepaid SIM, VoIP).
 - OQ2. Branch protection / rulesets on a **private** repo: available on the free GitHub plan? (The framework repo is public, so this is fine; the media-box plan repo may be private.)
 - OQ3. Headless permission behaviour of `opencode run` and `claude -p` for actions not on the allowlist: refuse, hang, or allow? Verify before T9.
 - OQ4. Signal receive in `MODE=native`: is polling `GET /v1/receive/{number}` enough, or should we switch to `json-rpc` mode (websocket)? Verify before T7.
