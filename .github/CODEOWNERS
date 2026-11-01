@@ -1,0 +1,4 @@
+# C9: gate code (approval, checks, permissions) always needs human review.
+# While there is a single maintainer, everything is owned by them; narrow this
+# to the gate paths once they exist.
+* @driessamyn

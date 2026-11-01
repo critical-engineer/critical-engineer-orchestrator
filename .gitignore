@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+node_modules/
+*.db
+*.sqlite3
+.omc/
+.DS_Store
+
+# Spike scratch space; findings go in docs/spikes/
+spike-*/

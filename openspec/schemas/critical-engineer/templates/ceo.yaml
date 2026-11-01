@@ -1,0 +1,6 @@
+# CEO execution metadata. One entry per tracked task ID in tasks.md.
+tasks:
+  "1.1":
+    depends_on: []
+    blast_radius: low   # low | medium | high
+    check: "true"

@@ -1,0 +1,8 @@
+{
+  "name": "ceo-tools",
+  "private": true,
+  "description": "Pinned CLI dependencies for CEO. Install with: npm ci --ignore-scripts",
+  "dependencies": {
+    "@fission-ai/openspec": "1.16.0"
+  }
+}
