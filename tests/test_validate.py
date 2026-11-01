@@ -51,9 +51,9 @@ tasks:
 
 @pytest.fixture
 def change(tmp_path):
-    (tmp_path / "tasks.md").write_text(TASKS)
-    (tmp_path / "design.md").write_text(DESIGN)
-    (tmp_path / "ceo.yaml").write_text(CEO_YAML)
+    (tmp_path / "tasks.md").write_text(TASKS, encoding="utf-8")
+    (tmp_path / "design.md").write_text(DESIGN, encoding="utf-8")
+    (tmp_path / "ceo.yaml").write_text(CEO_YAML, encoding="utf-8")
     return tmp_path
 
 
@@ -63,9 +63,9 @@ def messages(change):
 
 def edit(change, name, old, new):
     path = change / name
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     assert old in text
-    path.write_text(text.replace(old, new))
+    path.write_text(text.replace(old, new), encoding="utf-8")
 
 
 def test_valid_change(change):
@@ -158,12 +158,12 @@ def test_dependency_cycle(change):
 
 
 def test_ceo_yaml_not_a_mapping(change):
-    (change / "ceo.yaml").write_text("- just a list\n")
+    (change / "ceo.yaml").write_text("- just a list\n", encoding="utf-8")
     assert messages(change) == ["expected a top-level 'tasks' mapping"]
 
 
 def test_ceo_yaml_invalid_yaml(change):
-    (change / "ceo.yaml").write_text("tasks: [unclosed\n")
+    (change / "ceo.yaml").write_text("tasks: [unclosed\n", encoding="utf-8")
     assert any(m.startswith("invalid YAML") for m in messages(change))
 
 
@@ -187,7 +187,7 @@ TEMPLATE_DESIGN = (
 
 
 def test_unfilled_design_template_fails(change):
-    (change / "design.md").write_text(TEMPLATE_DESIGN.read_text(encoding="utf-8"))
+    (change / "design.md").write_text(TEMPLATE_DESIGN.read_text(encoding="utf-8"), encoding="utf-8")
     msgs = messages(change)
     assert "C1 is empty" in msgs
     assert "D1 is empty" in msgs
@@ -227,4 +227,17 @@ def test_duplicate_nested_key_in_ceo_yaml(change):
 
 def test_non_ascii_content(change):
     edit(change, "tasks.md", "Sync tasks", "Synchronise tâches → ledger")
+    assert validate_change(change) == []
+
+
+def test_merge_key_override_is_not_a_duplicate(change):
+    (change / "ceo.yaml").write_text(
+        """\
+defaults: &defaults {depends_on: [], blast_radius: low, check: "true"}
+tasks:
+  "1.1": {<<: *defaults, blast_radius: medium}
+  "1.2": {<<: *defaults, depends_on: ["1.1"]}
+""",
+        encoding="utf-8",
+    )
     assert validate_change(change) == []

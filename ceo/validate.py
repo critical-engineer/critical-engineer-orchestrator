@@ -141,9 +141,12 @@ class _UniqueKeyLoader(yaml.SafeLoader):
 
 
 def _construct_unique_mapping(loader, node, deep=False):
-    loader.flatten_mapping(node)
+    # Only explicit keys count: a key that overrides one pulled in through a
+    # YAML merge (<<: *defaults) is allowed. construct_mapping does the merge.
     seen = set()
     for key_node, _ in node.value:
+        if key_node.tag == "tag:yaml.org,2002:merge":
+            continue
         key = loader.construct_object(key_node, deep=deep)
         try:
             duplicate = key in seen
