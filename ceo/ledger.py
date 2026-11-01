@@ -122,7 +122,10 @@ def _initialise(conn: sqlite3.Connection) -> None:
                 conn.execute(statement)
         conn.commit()
     except BaseException:
-        conn.rollback()
+        try:
+            conn.rollback()
+        except sqlite3.Error:
+            pass  # keep the original error; open_ledger() closes the connection
         raise
 
 
