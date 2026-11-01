@@ -95,38 +95,46 @@ def _statements(script: str) -> list[str]:
     return [s for s in statements if s != ";"]
 
 
-def _initialise(path: str | Path) -> None:
-    """Create the schema if needed, atomically.
+def _version(conn: sqlite3.Connection) -> int:
+    return conn.execute("PRAGMA user_version").fetchone()[0]
 
-    The version check and the DDL run in one write transaction, so a failure
-    leaves an empty file and concurrent openers can't both create tables.
-    ``executescript()`` is avoided because it commits any open transaction.
+
+def _initialise(conn: sqlite3.Connection) -> None:
+    """Create the schema on ``conn`` if needed, atomically.
+
+    A current ledger is detected without taking the write lock. A new one is
+    created inside a single write transaction, re-checking the version once
+    the lock is held, so a failure leaves an empty file and concurrent openers
+    can't both create tables. ``executescript()`` is avoided because it
+    commits any open transaction.
     """
-    conn = sqlite3.connect(path, isolation_level=None, timeout=30)
+    version = _version(conn)
+    if version == SCHEMA_VERSION:
+        return
+    if version != 0:
+        raise LedgerError(
+            f"ledger schema version {version}, this code expects {SCHEMA_VERSION}"
+        )
+    conn.execute("BEGIN IMMEDIATE")
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        try:
-            version = conn.execute("PRAGMA user_version").fetchone()[0]
-            if version == 0:
-                for statement in _statements(_SCHEMA):
-                    conn.execute(statement)
-            elif version != SCHEMA_VERSION:
-                raise LedgerError(
-                    f"ledger schema version {version}, this code expects {SCHEMA_VERSION}"
-                )
-            conn.execute("COMMIT")
-        except BaseException:
-            conn.execute("ROLLBACK")
-            raise
-    finally:
-        conn.close()
+        if _version(conn) == 0:
+            for statement in _statements(_SCHEMA):
+                conn.execute(statement)
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
-def open_ledger(path: str | Path) -> sqlite3.Connection:
+def open_ledger(path: str | Path, *, timeout: float = 30.0) -> sqlite3.Connection:
     """Open the ledger at ``path``, creating the schema if the file is new."""
-    _initialise(path)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=timeout)
     conn.row_factory = sqlite3.Row
+    try:
+        _initialise(conn)
+    except BaseException:
+        conn.close()
+        raise
     conn.execute("PRAGMA foreign_keys = ON")
     return conn
 

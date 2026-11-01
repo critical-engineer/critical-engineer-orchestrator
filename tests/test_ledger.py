@@ -84,6 +84,27 @@ def test_concurrent_first_opens(tmp_path):
     assert versions == [SCHEMA_VERSION] * 8
 
 
+def test_in_memory_ledger_has_schema():
+    c = open_ledger(":memory:")
+    c.execute("INSERT INTO plans (repo, change) VALUES ('r', 'c')")
+    c.close()
+
+
+def test_open_does_not_wait_for_another_writer(tmp_path):
+    path = tmp_path / "ledger.db"
+    open_ledger(path).close()
+    writer = sqlite3.connect(path, isolation_level=None)
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute("INSERT INTO plans (repo, change) VALUES ('r', 'c')")
+    try:
+        c = open_ledger(path, timeout=0.1)  # would raise "database is locked"
+        assert c.execute("SELECT count(*) FROM plans").fetchone()[0] == 0
+        c.close()
+    finally:
+        writer.execute("ROLLBACK")
+        writer.close()
+
+
 def test_plan_change_is_unique_per_repo(conn, plan_id):
     with pytest.raises(sqlite3.IntegrityError):
         conn.execute(
