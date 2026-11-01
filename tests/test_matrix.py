@@ -236,3 +236,19 @@ def test_transport_failure_is_recorded_by_notify(api, channel, tmp_path):
         notify(conn, channel, "done", "x")
     assert [r[0] for r in conn.execute("SELECT kind FROM events")] == ["notify.failed"]
     conn.close()
+
+
+def test_cli_runs_as_a_module(api):
+    # Regression: `python -m` loads this module as __main__ as well as
+    # ceo.channels.matrix; the CLI must work in that setting.
+    import os
+    import subprocess
+    import sys
+
+    env = {**os.environ, **env_for(url=api.url)}
+    result = subprocess.run(
+        [sys.executable, "-m", "ceo.channels.matrix", "check"],
+        env=env, capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok: room verified" in result.stdout

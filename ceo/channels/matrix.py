@@ -18,6 +18,7 @@ Setup helpers (run as the orchestrator user, with the variables above set):
 """
 
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -26,7 +27,7 @@ import uuid
 from dataclasses import dataclass, field
 from urllib.parse import quote
 
-from ceo.notify import ChannelError, channel_from_env, check_transport, open_url
+from ceo.notify import ChannelError, check_transport, open_url
 
 _USER_ID = re.compile(r"@[^:\s]+:\S+")
 _ROOM_ID = re.compile(r"![^\s/]+")
@@ -140,9 +141,9 @@ def main(argv: list[str]) -> int:
         print("usage: python -m ceo.channels.matrix join|check", file=sys.stderr)
         return 2
     try:
-        channel = channel_from_env()
-        if not isinstance(channel, MatrixChannel):
-            raise ChannelError("CEO_CHANNEL is not matrix")
+        # Built directly: under `python -m` this module is __main__, so an
+        # isinstance check against ceo.channels.matrix.MatrixChannel would fail.
+        channel = MatrixChannel.from_env(os.environ)
         if argv == ["join"]:
             channel.join()
             print(f"joined {channel.room_id} as {channel.bot_id()}")
