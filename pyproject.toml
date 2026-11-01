@@ -11,6 +11,9 @@ requires-python = ">=3.11"
 dependencies = ["pyyaml>=6.0"]
 dynamic = ["version"]
 
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
 [tool.setuptools.dynamic]
 version = { attr = "ceo.__version__" }
 

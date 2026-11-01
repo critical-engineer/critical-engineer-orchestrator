@@ -12,6 +12,8 @@ Status: pre-alpha (T1 of the bootstrap plan).
 ```sh
 export OPENSPEC_TELEMETRY=0          # OpenSpec telemetry is on by default
 (cd tools && npm ci --ignore-scripts) # pinned OpenSpec CLI
+python3 -m venv .venv && .venv/bin/pip install -e '.[dev]'
+.venv/bin/python -m pytest
 tools/node_modules/.bin/openspec schema validate critical-engineer
 ```
 
