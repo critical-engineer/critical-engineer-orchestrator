@@ -133,7 +133,7 @@ depends_on: [T2, T3]
 blast_radius: medium
 check: python -m pytest tests/test_sync.py
 ```
-Inserts new tasks, tombstones removed ones, flags changed tasks that have already run (F9).
+Inserts new tasks, tombstones removed ones, flags changed tasks that have already run (F9). Implemented in `ceo/sync.py`: only a change that passes the CE validator is synced, in one transaction; a task that changed after running is set to `blocked` for a human decision; re-adding a removed label is refused.
 
 ### Phase 1: human interface (the P1 that unblocks everything else)
 
