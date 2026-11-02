@@ -22,7 +22,12 @@ CEO makes the **plan** the unit of coordination:
    task. A task is done only when a check run by the orchestrator passes, and the
    evidence is kept.
 4. **The human owns judgment, asynchronously.** Plans are reviewed on GitHub;
-   questions and approvals arrive in a chat app ([Matrix](https://matrix.org/)). Nobody babysits a terminal.
+   questions and approvals arrive in a chat app ([Matrix](https://matrix.org/)), and
+   deep work happens at the desk through a Claude Code skill. Nobody babysits a terminal.
+5. **Expensive judgment, cheap execution.** Research, planning and review run on the
+   human's own subscription, interactively. Execution runs on small, cheap models
+   against a plan specific enough for them, and every result is checked
+   deterministically. The orchestrator itself uses no model.
 
 Background: [criticalengineer.ai](https://criticalengineer.ai/).
 

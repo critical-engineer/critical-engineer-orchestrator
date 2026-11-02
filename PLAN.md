@@ -16,11 +16,33 @@ The work drifts from its reasoning and nobody can answer "why is it like this?"
 
 CEO makes the *plan* the unit of coordination. It's a small, auditable orchestrator. Agents carry out work against an approved plan, the orchestrator checks the results, and the human owns every decision that matters, without having to sit at a terminal.
 
+## Key design principle: judgment on the subscription, execution on cheap models
+
+Every step of the workflow is owned by whoever is best, and cheapest, at it. Expensive thinking happens once, in the plan; cheap execution happens many times against it.
+
+| Step | Who | Model cost |
+|------|-----|------------|
+| 1. Research and plan | The human with Claude Code, through the CEO skill (D13). Output: an OpenSpec change with constraints, failure modes, decisions and checkable tasks | Subscription, interactive |
+| 2. Critique | The Critic, run from the CEO skill (T8) | Subscription, interactive |
+| 3. Approve | The human merges the plan PR (D1) | None |
+| 4. Execute | Workers on the box, one small task each (D4) | Cheap API models, capped (G5) |
+| 5. Verify | The orchestrator runs each task's check (G3) | None: no LLM |
+| 6. Escalate | A task that keeps failing goes to a stronger model within budget, then to the human via the CEO skill (T10) | API, then subscription |
+| 7. Decide | Questions and elevated actions: chat on the phone, or the CEO skill at the desk, as structured approvals (T11) | None |
+
+What follows from it:
+- **The orchestrator never needs an LLM.** Routing, gating and verification are deterministic.
+- **Plans are written for small models.** Each task is small, specific about where it works, and has a meaningful check. A task a small model can't execute is a planning failure, not an execution one; the Critic flags it.
+- **The subscription is only ever used interactively,** by the human driving Claude Code. CEO never automates a subscription (D12).
+- **The human reviews the plan, not every line of code.** A wrong line in a plan becomes many wrong lines of code; a wrong line of code fails its check.
+
+Credit: the research → plan → implement workflow and approvals bound to an exact action are ideas from [HumanLayer](https://github.com/humanlayer/humanlayer).
+
 ## 2. Goals / non-goals
 
 **Goals (v1)**
 - G1. A plan in a git repo is the single source of engineering intent. Approval is explicit, attributable and tied to a commit.
-- G2. Async human interface. Plans are edited and approved on GitHub; questions and notifications go through a chat channel (Matrix for the POC, D11). No tmux babysitting.
+- G2. Async human interface. Plans are edited and approved on GitHub; questions and notifications go through a chat channel (Matrix for the POC, D11); deep work happens at the desk through a Claude Code skill (D13). No tmux babysitting.
 - G3. Tasks complete only when an orchestrator-run check passes, with the evidence stored.
 - G4. Workers are contained by the environment (OS user, network), not by prompt or blocklist.
 - G5. Total model spend ≤ $20/month, enforced.
@@ -65,11 +87,11 @@ CEO makes the *plan* the unit of coordination. It's a small, auditable orchestra
   Rejected: a YAML `status: approved` field, which anyone who can write the file can set; a hash recorded by a local `ceo approve` command, which needs a terminal.
 - D2. **Ledger = SQLite**, owned by the `ceo` user. Rejected: Postgres (unneeded at this scale); graph-framework state (a second copy of reality).
 - D3. **Orchestrator = a plain Python loop.** Rejected: LangGraph (extra abstraction that hides the state machine).
-- D4. **Workers = existing CLIs, called headless.** Default `opencode run --format json` (OpenRouter). Optional: `claude -p`.
+- D4. **Workers = existing CLIs, called headless.** Default `opencode run --format json` (OpenRouter). Optional: `claude -p`, with an API key only, never a subscription (D12).
   Rejected: our own coding agent (not the new part); OpenHands (strong sandbox, but centred on conversations and a heavier setup).
 - D5. **Privilege separation:** orchestrator runs as `ceo`, workers as `ceo-worker` via a single sudoers rule. nftables blocks `ceo-worker` from home-network ranges and from local port 9922.
   Rejected: a single user (workers could tamper with the ledger and credentials); a VM (heavier; revisit if workers need Docker).
-- D6. **Human interface:** GitHub for durable artefacts (plan, plan-change PRs, critic reports); a chat channel for notifications and short answers (D11). Both are polled outbound, with no inbound ports.
+- D6. **Human interface:** GitHub for durable artefacts (plan, plan-change PRs, critic reports); a chat channel for notifications and short answers on the phone (D11); the CEO skill in Claude Code for deep work at the desk (D13). The box only polls outbound, with no inbound ports.
 - D7. **Elevated actions are ledger requests,** not interactive prompts. They sit as `blocked:needs-approval` until approved.
 - D8. **Status comes from artefacts:** each task runs on a branch with one commit per task. The ledger stores the commit SHA, check output and cost.
 - D9. **Paperclip isn't used,** because its unit of coordination is the ticket. Ideas borrowed from it: budgets, atomic task checkout, an audit log.
@@ -80,6 +102,11 @@ CEO makes the *plan* the unit of coordination. It's a small, auditable orchestra
 - D11. **Chat channel = Matrix for the POC, behind a pluggable channel interface.** The bot is an ordinary Matrix account of its own; it talks to the human in one private, unencrypted room and refuses to send if the room holds anyone else or is encrypted. Outbound HTTPS only, stdlib only (C2).
   Rejected: Signal (the bot needs a second phone number to register and keep alive; kept as an optional channel); Telegram (owner and governance didn't sit right with the maintainer, and messages aren't end-to-end encrypted); Delta Chat (end-to-end encrypted by default, but bots need an extra native RPC binary); GitHub-only (the framework repo is public, and replying in the app is clunky; still the home for durable decisions, D6); ntfy (push and buttons only, no free-text answers).
   Risks: unencrypted, so the homeserver operator can read messages: keep secrets and personal data out of them; revisit encryption or a self-hosted homeserver after the POC.
+- D12. **Judgment runs on the human's subscription, interactively; execution runs on cheap API models.** See the key design principle. The orchestrator itself uses no model.
+  Rejected: everything on paid APIs (a strong model for every task breaks the budget, G5); automating the subscription on the box via `claude -p` or the Agent SDK (the terms for automated and third-party use of Claude subscriptions changed several times in 2026, and it would take the human out of the judgment it is meant to support); one cheap model for everything including planning (weak plans are exactly F10).
+  Risks: cheap models may fail more often, causing more escalations; the ledger records attempts and escalations per task so the split can be tuned. Re-check the subscription terms before changing this (OQ13).
+- D13. **The desk interface is a CEO skill for Claude Code.** It lets the human start a plan (scaffold an OpenSpec change), run the Critic, see status, answer questions, approve elevated actions and take over a blocked task. How the skill reaches CEO is open (OQ12): a CLI over SSH, an MCP server, or A2A. Whatever the transport, it acts as the human through the same gates, and every decision is recorded in the ledger (C8).
+  Rejected: a web UI (a non-goal for v1); tmux sessions (the problem CEO exists to solve); building the human interface into the orchestrator loop (keeps the loop deterministic and small, G6).
 
 ## 6. Plan file format (v1)
 
@@ -167,11 +194,19 @@ Polls receive; accepts only the allowlisted sender (F4); parses `Q<n> <answer>`;
 
 ### T8: Critic on draft plans
 ```yaml
-depends_on: [T5, T6]
+depends_on: [T5, T13]
 blast_radius: medium
 check: python -m pytest tests/test_critic.py
 ```
-When a plan PR is opened or updated: a strong model challenges constraints, failure modes and decisions; the report is posted as a PR comment and a chat notification is sent.
+Run from the CEO skill on the human's subscription (D12), on request: a strong model challenges the constraints, failure modes and decisions, and flags tasks too vague or too large for a small model. The report is posted as a PR comment. Optional: a cheap automated first pass when a plan PR is opened, with a chat notification.
+
+### T13: CEO skill for Claude Code
+```yaml
+depends_on: [T4, T7]
+blast_radius: medium
+check: python -m pytest tests/test_skill.py
+```
+The desk interface (D13): a Claude Code skill plus the operations behind it: scaffold a plan, status, open questions, answer, approve, take over a blocked task. Starts with a short spike to choose the transport (OQ12). Decisions made through it are recorded in the ledger like chat answers (C8).
 
 ### Phase 2: execution loop
 
@@ -189,7 +224,7 @@ depends_on: [T9]
 blast_radius: high
 check: python -m pytest tests/test_checks.py
 ```
-`completed` only if `check` passes in a clean checkout; output and SHA are stored. Failing → retry until the attempt limit, then `blocked` → chat question (Gate 2).
+`completed` only if `check` passes in a clean checkout; output and SHA are stored. Failing → retry until the attempt limit, then escalate: optionally one more attempt on a stronger model within budget (T12), then `blocked` → chat question, with a takeover path through the CEO skill (T13). Attempts and escalations are recorded per task (D12).
 
 ### T11: Elevated-action requests
 ```yaml
@@ -197,7 +232,7 @@ depends_on: [T7, T10]
 blast_radius: high
 check: python -m pytest tests/test_elevated.py
 ```
-Merge to main, deploy, anything that needs sudo → a request row with `blocked:needs-approval` → approved via chat `Q<n> approve` or a GitHub PR review.
+Merge to main, deploy, anything that needs sudo → a request row with `blocked:needs-approval` → approved via chat `Q<n> approve`, the CEO skill, or a GitHub PR review. Approvals are structured (an idea from HumanLayer): each request shows the exact action (command, diff or target) and its arguments, and a denial carries a reason that goes back to the worker as input.
 
 ### T12: Budget enforcement
 ```yaml
@@ -223,3 +258,5 @@ Remaining CEO improvements are run through CEO itself. Then the first external p
 - OQ9. ~~Where status lives~~ Resolved with D10: the ledger holds execution status (C7); checkboxes are ticked only by the orchestrator at archive, so the archived change records what was done.
 - OQ10. Research tasks (like T0) have checks that prove a file exists, not that its findings are right. Should they always require human sign-off regardless of blast_radius?
 - OQ11. Matrix end-to-end encryption, after the POC: a vodozemac-backed Python library or an encrypting proxy (pantalaimon)? libolm is deprecated (July 2024) and python-olm wheels reportedly stop at CPython 3.12. Deferred by D11; needs a dependency decision (C2) and a backed-up key store.
+- OQ12. Transport for the CEO skill (D13): a CLI run over SSH on the box (simplest), an MCP server (typed tools; where does it run, and how does it reach the box's ledger?), or A2A (if agents, not only the human, will talk to CEO). Decide with a short spike at the start of T13.
+- OQ13. Subscription terms: before any change to D12, re-check Anthropic's current terms for automated and third-party use of Claude subscriptions; they changed several times in 2026.
