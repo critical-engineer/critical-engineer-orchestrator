@@ -21,11 +21,15 @@ CEO makes the **plan** the unit of coordination:
 3. **Agents execute; the orchestrator verifies.** Existing coding agents run each
    task. A task is done only when a check run by the orchestrator passes, and the
    evidence is kept.
-4. **The human owns judgment, asynchronously.** Plans are reviewed on GitHub;
-   questions and approvals arrive in a chat app ([Matrix](https://matrix.org/)), and
-   deep work happens at the desk through a Claude Code skill. Nobody babysits a terminal.
-5. **Expensive judgment, cheap execution.** Research, planning and review run on the
-   human's own subscription, interactively. Execution runs on small, cheap models
+4. **The Critical Engineer owns judgment.** Models point at the risky places (a flawed
+   design, a race condition, an assumption the plan never sanctioned); the engineer
+   decides. CEO stops at judgment gates only where the blast radius warrants it, so
+   review effort follows reasoning risk, not diff size. Plans are reviewed on GitHub;
+   gates and questions arrive in a chat app ([Matrix](https://matrix.org/)) or at the
+   desk through a skill in the engineer's coding assistant (Claude Code, Gemini CLI,
+   Codex, …). Nobody babysits a terminal.
+5. **Expensive judgment, cheap execution.** Research, planning and critique run on the
+   engineer's own subscription, interactively. Execution runs on small, cheap models
    against a plan specific enough for them, and every result is checked
    deterministically. The orchestrator itself uses no model.
 
