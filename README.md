@@ -22,7 +22,7 @@ CEO makes the **plan** the unit of coordination:
    task. A task is done only when a check run by the orchestrator passes, and the
    evidence is kept.
 4. **The human owns judgment, asynchronously.** Plans are reviewed on GitHub;
-   questions and approvals arrive by Signal. Nobody babysits a terminal.
+   questions and approvals arrive in a chat app ([Matrix](https://matrix.org/)). Nobody babysits a terminal.
 
 Background: [criticalengineer.ai](https://criticalengineer.ai/).
 
@@ -48,7 +48,7 @@ Each of these is a conscious POC shortcut, not a design limit:
 | Sequential task execution | Easier to observe and reason about than parallel runs |
 | SQLite ledger | The only status store; no service to run |
 | Plain Python loop, stdlib plus PyYAML | Small enough to read in one sitting |
-| GitHub and Signal, polled | No inbound ports; uses tools the human already has |
+| GitHub and Matrix, polled | No inbound ports; open, non-profit-governed chat; no phone number for the bot |
 | Existing coding agents, called headless | The new part is the workflow, not the agent |
 
 The full reasoning, including the failure modes each choice guards against, is in
@@ -57,7 +57,7 @@ The full reasoning, including the failure modes each choice guards against, is i
 ## Status
 
 Early. The plan format (OpenSpec plus the `critical-engineer` schema), the ledger
-and the plan validator are in place; the human interface (GitHub approval, Signal)
+and the plan validator are in place; the human interface (GitHub approval, Matrix chat)
 is next. Progress is tracked task by task in [PLAN.md](PLAN.md).
 
 ## Try it

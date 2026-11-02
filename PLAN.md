@@ -20,7 +20,7 @@ CEO makes the *plan* the unit of coordination. It's a small, auditable orchestra
 
 **Goals (v1)**
 - G1. A plan in a git repo is the single source of engineering intent. Approval is explicit, attributable and tied to a commit.
-- G2. Async human interface. Plans are edited and approved on GitHub; questions and notifications go through Signal. No tmux babysitting.
+- G2. Async human interface. Plans are edited and approved on GitHub; questions and notifications go through a chat channel (Matrix for the POC, D11). No tmux babysitting.
 - G3. Tasks complete only when an orchestrator-run check passes, with the evidence stored.
 - G4. Workers are contained by the environment (OS user, network), not by prompt or blocklist.
 - G5. Total model spend ≤ $20/month, enforced.
@@ -37,11 +37,11 @@ CEO makes the *plan* the unit of coordination. It's a small, auditable orchestra
 - C1. Runs on media-box: i5-8500T, 16 GB, Ubuntu 26.04 Desktop, no GPU. All inference goes through remote APIs.
 - C2. Python 3.11+, stdlib plus PyYAML. Every additional dependency needs a recorded decision. Exception (D10): the OpenSpec CLI (Node 22.12+), pinned, called as a subprocess, and relied on only for its file format and `--json` output (D10).
 - C3. Model access through OpenRouter, with a hard credit limit on the key (backstop) and per-run cost tracked in the ledger.
-- C4. Workers never hold the GitHub or Signal credentials, and can't write the ledger or the plan.
-- C5. Workers have no sudo, no Docker group membership, no access to `/home/dries` or `/media`, no access to the home network, and no access to the Signal API.
+- C4. Workers never hold the GitHub or chat-channel credentials, and can't write the ledger or the plan.
+- C5. Workers have no sudo, no Docker group membership, no access to `/home/dries` or `/media`, no access to the home network, and no access to the chat channel (its API or credentials).
 - C6. The approved plan is read-only during execution. Any change goes through a PR and re-approval.
 - C7. The ledger is the only store of execution status. No status is kept in the plan file. Under D10, the `tasks.md` checkboxes are written only by the orchestrator, at archive time, after checks pass. Agents never tick them; an edit to the approved file on `main` counts as a plan change (F3).
-- C8. Every decision a human makes through Signal is saved in the ledger. Decisions that change the plan become PRs.
+- C8. Every decision a human makes through the chat channel is saved in the ledger. Decisions that change the plan become PRs.
 - C9. Changes to the gate code (approval, check, permission logic) always need human review, including when CEO is building itself.
 
 ## 4. Failure modes
@@ -51,10 +51,10 @@ CEO makes the *plan* the unit of coordination. It's a small, auditable orchestra
 | F1 | Worker exits 0 without having done the task | G3: orchestrator runs the task's `check`; the exit code is ignored for completion |
 | F2 | Worker edits the plan or self-approves | C4/C6: plan outside the worker's workspace; approval = protected-main SHA |
 | F3 | Plan edited after approval | Orchestrator compares main HEAD with the approved SHA; on mismatch it halts and re-gates |
-| F4 | Signal message spoofed or injected | Accept only from an allowlisted sender number; answers are data, never instructions |
+| F4 | Chat message spoofed or injected | Accept only from the allowlisted human account; answers are data, never instructions |
 | F5 | Decisions lost in chat | C8 |
 | F6 | Runaway spend | OpenRouter key limit, per-task attempt limit, cost per run in the ledger |
-| F7 | Worker reads personal data or messages | C5 plus a separate Signal bot number (see OQ1) |
+| F7 | Worker reads personal data or messages | C5; the bot has its own chat account, so it can't read the human's messages (D11) |
 | F8 | Self-build weakens its own gates | C9: protected paths in CODEOWNERS / review rule |
 | F9 | Task IDs shift when the plan is edited | Explicit `X.Y` labels parsed by CEO, never OpenSpec's positional JSON `id` (T0 R4); deleted IDs are tombstoned in the ledger, never reused |
 | F10 | A cheap model's plan is wrong and nobody notices | Critic review of the plan, then human approval, before any execution |
@@ -69,13 +69,17 @@ CEO makes the *plan* the unit of coordination. It's a small, auditable orchestra
   Rejected: our own coding agent (not the new part); OpenHands (strong sandbox, but centred on conversations and a heavier setup).
 - D5. **Privilege separation:** orchestrator runs as `ceo`, workers as `ceo-worker` via a single sudoers rule. nftables blocks `ceo-worker` from home-network ranges and from local port 9922.
   Rejected: a single user (workers could tamper with the ledger and credentials); a VM (heavier; revisit if workers need Docker).
-- D6. **Human interface:** GitHub for durable artefacts (plan, plan-change PRs, critic reports); Signal for notifications and short answers. Both are polled outbound, with no inbound ports.
+- D6. **Human interface:** GitHub for durable artefacts (plan, plan-change PRs, critic reports); a chat channel for notifications and short answers (D11). Both are polled outbound, with no inbound ports.
 - D7. **Elevated actions are ledger requests,** not interactive prompts. They sit as `blocked:needs-approval` until approved.
 - D8. **Status comes from artefacts:** each task runs on a branch with one commit per task. The ledger stores the commit SHA, check output and cost.
 - D9. **Paperclip isn't used,** because its unit of coordination is the ticket. Ideas borrowed from it: budgets, atomic task checkout, an audit log.
 - D10. **(Accepted 2026-11-01 after the T0 spike; see docs/spikes/T0-openspec.md) OpenSpec is the plan format; CEO is the approval and execution layer.** CEO additionally owns: stable task IDs parsed from `X.Y` labels (OpenSpec's JSON IDs are positional), a CE validator on top of `openspec validate` (which doesn't check custom sections or `ceo.yaml`), and telemetry off. A custom `critical-engineer` schema forked from `spec-driven` adds constraints, failure modes and rejected alternatives, plus a CEO-owned per-task file (check / depends_on / blast_radius keyed by task ID). Archive merges deltas into living specs, so the record of how the system works and why outlives each change.
   Rejected: our own PLAN.md format. It works, but it goes stale after execution and has to reinvent validation.
   Risks: OpenSpec moves fast (its repo docs are marked partly legacy; custom schemas are partly experimental), so pin the version; there's a status-location conflict, resolved by C7.
+
+- D11. **Chat channel = Matrix for the POC, behind a pluggable channel interface.** The bot is an ordinary Matrix account of its own; it talks to the human in one private, unencrypted room and refuses to send if the room holds anyone else or is encrypted. Outbound HTTPS only, stdlib only (C2).
+  Rejected: Signal (the bot needs a second phone number to register and keep alive; kept as an optional channel); Telegram (owner and governance didn't sit right with the maintainer, and messages aren't end-to-end encrypted); Delta Chat (end-to-end encrypted by default, but bots need an extra native RPC binary); GitHub-only (the framework repo is public, and replying in the app is clunky; still the home for durable decisions, D6); ntfy (push and buttons only, no free-text answers).
+  Risks: unencrypted, so the homeserver operator can read messages: keep secrets and personal data out of them; revisit encryption or a self-hosted homeserver after the POC.
 
 ## 6. Plan file format (v1)
 
@@ -145,19 +149,19 @@ check: python -m pytest tests/test_approval.py
 ```
 Polls `main`; approved plan = PLAN.md at main HEAD; records approved_sha; halts on mismatch (F3). Tests use a local bare repo. Bot identity: a separate GitHub account or a GitHub App, with a token scoped to the plan repo.
 
-### T6: Signal outbound
+### T6: Chat notifications (outbound)
 ```yaml
 depends_on: [T2]
 blast_radius: low
-check: python -m pytest tests/test_signal.py   # plus a manual check: message arrives on phone
+check: python -m pytest tests/test_notify.py tests/test_matrix.py tests/test_signal.py   # plus a manual check: python -m ceo.channels.matrix check
 ```
-`/v2/send` to the allowlisted human. Event types: critic-ready, blocked, question, done.
+Event types: critic-ready, blocked, question, done, sent only to the one configured human. `ceo/notify.py` is channel-agnostic; channels in `ceo/channels/` (Matrix, the POC default; Signal kept as an option). The Matrix bot refuses to send unless the room holds exactly the bot and the human and is unencrypted.
 
-### T7: Signal inbound answers
+### T7: Chat answers (inbound)
 ```yaml
 depends_on: [T6]
 blast_radius: high
-check: python -m pytest tests/test_signal_inbound.py
+check: python -m pytest tests/test_answers.py
 ```
 Polls receive; accepts only the allowlisted sender (F4); parses `Q<n> <answer>`; stores the answer in the ledger; unknown messages get a help reply. Answers that change the plan → the orchestrator opens a PR (C8).
 
@@ -167,7 +171,7 @@ depends_on: [T5, T6]
 blast_radius: medium
 check: python -m pytest tests/test_critic.py
 ```
-When a plan PR is opened or updated: a strong model challenges constraints, failure modes and decisions; the report is posted as a PR comment and a Signal notification is sent.
+When a plan PR is opened or updated: a strong model challenges constraints, failure modes and decisions; the report is posted as a PR comment and a chat notification is sent.
 
 ### Phase 2: execution loop
 
@@ -185,7 +189,7 @@ depends_on: [T9]
 blast_radius: high
 check: python -m pytest tests/test_checks.py
 ```
-`completed` only if `check` passes in a clean checkout; output and SHA are stored. Failing → retry until the attempt limit, then `blocked` → Signal question (Gate 2).
+`completed` only if `check` passes in a clean checkout; output and SHA are stored. Failing → retry until the attempt limit, then `blocked` → chat question (Gate 2).
 
 ### T11: Elevated-action requests
 ```yaml
@@ -193,7 +197,7 @@ depends_on: [T7, T10]
 blast_radius: high
 check: python -m pytest tests/test_elevated.py
 ```
-Merge to main, deploy, anything that needs sudo → a request row with `blocked:needs-approval` → approved via Signal `Q<n> approve` or a GitHub PR review.
+Merge to main, deploy, anything that needs sudo → a request row with `blocked:needs-approval` → approved via chat `Q<n> approve` or a GitHub PR review.
 
 ### T12: Budget enforcement
 ```yaml
@@ -201,20 +205,21 @@ depends_on: [T9]
 blast_radius: medium
 check: python -m pytest tests/test_budget.py
 ```
-Per-run cost in the ledger; monthly cap; pause plus Signal alert at 80% and 100%.
+Per-run cost in the ledger; monthly cap; pause plus chat alert at 80% and 100%.
 
 ### Phase 3: dogfood
 Remaining CEO improvements are run through CEO itself. Then the first external plan: media-box (VPN exit → one cycling stream → Data_Vault in Jellyfin).
 
 ## 8. Open questions
 
-- OQ1. Bot Signal identity: a separate number (which number types does Signal accept for registration?) vs. a linked device on the personal account (gives the bot access to all personal messages, so not preferred).
+- OQ1. ~~Bot chat identity~~ Resolved 2026-11-01 by D11: the bot has its own Matrix account (no phone number needed).
 - OQ2. Branch protection / rulesets on a **private** repo: available on the free GitHub plan? (The framework repo is public, so this is fine; the media-box plan repo may be private.)
 - OQ3. Headless permission behaviour of `opencode run` and `claude -p` for actions not on the allowlist: refuse, hang, or allow? Verify before T9.
-- OQ4. Signal receive in `MODE=native`: is polling `GET /v1/receive/{number}` enough, or should we switch to `json-rpc` mode (websocket)? Verify before T7.
+- OQ4. ~~Signal receive mode~~ Superseded by D11; for Matrix, T7 long-polls `/sync`.
 - OQ5. Per-run cost: can OpenCode report cost per run, or do we query OpenRouter's usage data?
 - OQ6. Workers that need Docker (media-box phase): rootless Docker for `ceo-worker`, or a VM? Can gluetun run rootless?
 - OQ7. Name: "CEO" clashes with Paperclip's CEO agent; is that irony intended?
 - OQ8. ~~Does OpenSpec's JSON output expose task-level detail?~~ Answered by T0: yes (`instructions apply --json`), but task IDs are positional (R4). Still open: is `docs/agent-contract.md` a stable interface for programs?
 - OQ9. ~~Where status lives~~ Resolved with D10: the ledger holds execution status (C7); checkboxes are ticked only by the orchestrator at archive, so the archived change records what was done.
 - OQ10. Research tasks (like T0) have checks that prove a file exists, not that its findings are right. Should they always require human sign-off regardless of blast_radius?
+- OQ11. Matrix end-to-end encryption, after the POC: a vodozemac-backed Python library or an encrypting proxy (pantalaimon)? libolm is deprecated (July 2024) and python-olm wheels reportedly stop at CPython 3.12. Deferred by D11; needs a dependency decision (C2) and a backed-up key store.
