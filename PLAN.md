@@ -69,7 +69,7 @@ Credit: the research → plan → implement workflow and approvals bound to an e
 - G2. Async human interface. Plans are edited and approved on GitHub; questions and notifications go through a chat channel (Matrix for the POC, D11); deep work happens at the desk through a skill in the engineer's coding assistant (D13). No tmux babysitting.
 - G3. Tasks complete only when an orchestrator-run check passes, with the evidence stored.
 - G4. Workers are contained by the environment (OS user, network), not by prompt or blocklist.
-- G5. Total model spend ≤ $20/month, enforced.
+- G5. API model spend ≤ $20/month, enforced: everything CEO pays per token (workers, escalations, any automated Critic pass). The engineer's own subscription is excluded: a fixed cost they already pay, used only interactively (D12).
 - G6. Readable enough to serve as a reference implementation for criticalengineer.ai.
 
 **Non-goals (v1)**
@@ -118,7 +118,7 @@ Credit: the research → plan → implement workflow and approvals bound to an e
   Rejected: our own coding agent (not the new part); OpenHands (strong sandbox, but centred on conversations and a heavier setup).
 - D5. **Privilege separation:** orchestrator runs as `ceo`, workers as `ceo-worker` via a single sudoers rule. nftables blocks `ceo-worker` from home-network ranges and from local port 9922.
   Rejected: a single user (workers could tamper with the ledger and credentials); a VM (heavier; revisit if workers need Docker).
-- D6. **Human interface:** GitHub for durable artefacts (plan, plan-change PRs, critic reports); a chat channel for notifications and short answers on the phone (D11); the CEO skill in the engineer's coding assistant for deep work at the desk (D13). The box only polls outbound, with no inbound ports.
+- D6. **Human interface:** GitHub for durable artefacts (plan, plan-change PRs, critic reports); a chat channel for notifications and short answers on the phone (D11); the CEO skill in the engineer's coding assistant for deep work at the desk (D13). CEO itself opens no inbound ports: the box only polls outbound. The engineer's existing SSH access to the box is administrative and outside CEO; if the skill uses it (OQ12), it must not widen it (e.g. a restricted key with a forced command).
 - D7. **Elevated actions are ledger requests,** not interactive prompts. They sit as `blocked:needs-approval` until approved.
 - D8. **Status comes from artefacts:** each task runs on a branch with one commit per task. The ledger stores the commit SHA, check output and cost.
 - D9. **Paperclip isn't used,** because its unit of coordination is the ticket. Ideas borrowed from it: budgets, atomic task checkout, an audit log.
@@ -247,19 +247,19 @@ check: python -m pytest tests/test_dispatch.py && sudo -u ceo-worker test ! -r /
 
 ### T10: Orchestrator-run checks and evidence
 ```yaml
-depends_on: [T9]
+depends_on: [T9, T13]
 blast_radius: high
 check: python -m pytest tests/test_checks.py
 ```
-`completed` only if `check` passes in a clean checkout; output and SHA are stored. Failing → retry until the attempt limit, then escalate: optionally one more attempt on a stronger model within budget (T12), then `blocked` → chat question, with a takeover path through the CEO skill (T13). Attempts and escalations are recorded per task (D12). A `high` task whose check passes goes to a judgment gate: the Critic interrogates the result against the plan's constraints and failure modes, and it is `completed` only when the engineer signs off.
+`completed` only if `check` passes in a clean checkout; output and SHA are stored. Failing → retry until the attempt limit, then escalate: optionally one more attempt on a stronger model within budget (T12), then `blocked` → chat question, with a takeover path through the CEO skill (T13). Attempts and escalations are recorded per task (D12): every attempt is a `runs` row (worker, model, cost; adds `runs.model`) and increments `tasks.attempts`; each step up the ladder is an event, `task.retry`, `task.escalated` (`{from_model, to_model, reason}`) or `task.takeover` (`{by}`), so a task's full path can be rebuilt from the ledger. A `high` task whose check passes goes to a judgment gate: the Critic interrogates the result against the plan's constraints and failure modes, and it is `completed` only when the engineer signs off.
 
 ### T11: Elevated-action requests
 ```yaml
-depends_on: [T7, T10]
+depends_on: [T7, T10, T13]
 blast_radius: high
 check: python -m pytest tests/test_elevated.py
 ```
-Merge to main, deploy, anything that needs sudo → a request row with `blocked:needs-approval` → approved via chat `Q<n> approve`, the CEO skill, or a GitHub PR review. Approvals are structured (an idea from HumanLayer): each request shows the exact action (command, diff or target) and its arguments, and a denial carries a reason that goes back to the worker as input.
+Merge to main, deploy, anything that needs sudo → a request row with `blocked:needs-approval` → approved via chat `Q<n> approve`, the CEO skill, or a GitHub PR review. Approvals are structured (an idea from HumanLayer): each request shows the exact action (command, diff or target) and its arguments, and a denial carries a reason that goes back to the worker as input. Invariant: the request stores the exact action payload and its SHA-256 digest; approval fields are write-once; just before execution the digest is recomputed from what will actually run, and a mismatch is rejected and needs a new approval.
 
 ### T12: Budget enforcement
 ```yaml
@@ -285,5 +285,5 @@ Remaining CEO improvements are run through CEO itself. Then the first external p
 - OQ9. ~~Where status lives~~ Resolved with D10: the ledger holds execution status (C7); checkboxes are ticked only by the orchestrator at archive, so the archived change records what was done.
 - OQ10. Research tasks (like T0) have checks that prove a file exists, not that its findings are right. Should they always require human sign-off regardless of blast_radius?
 - OQ11. Matrix end-to-end encryption, after the POC: a vodozemac-backed Python library or an encrypting proxy (pantalaimon)? libolm is deprecated (July 2024) and python-olm wheels reportedly stop at CPython 3.12. Deferred by D11; needs a dependency decision (C2) and a backed-up key store.
-- OQ12. Transport for the CEO skill (D13): a CLI run over SSH on the box (simplest), an MCP server (typed tools; where does it run, and how does it reach the box's ledger?), or A2A (if agents, not only the human, will talk to CEO). Decide with a short spike at the start of T13.
+- OQ12. Transport for the CEO skill (D13), keeping D6's boundary (no new inbound ports): a CLI run over the engineer's existing SSH access, with a restricted key and forced command (simplest), an MCP server (typed tools; where does it run, and how does it reach the box's ledger?), or A2A (if agents, not only the human, will talk to CEO). Decide with a short spike at the start of T13.
 - OQ13. Subscription terms: before any change to D12, re-check the provider's current terms for automated and third-party use of consumer subscriptions (Anthropic's changed several times in 2026).

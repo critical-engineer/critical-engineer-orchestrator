@@ -23,8 +23,10 @@ CEO makes the **plan** the unit of coordination:
    evidence is kept.
 4. **The Critical Engineer owns judgment.** Models point at the risky places (a flawed
    design, a race condition, an assumption the plan never sanctioned); the engineer
-   decides. CEO stops at judgment gates only where the blast radius warrants it, so
-   review effort follows reasoning risk, not diff size. Plans are reviewed on GitHub;
+   decides. CEO stops at judgment gates (plan approval, high blast-radius results,
+   unsanctioned assumptions, stale evidence, elevated actions, escalations) and lets
+   low-risk work proceed on its check, so review effort follows reasoning risk, not
+   diff size. Plans are reviewed on GitHub;
    gates and questions arrive in a chat app ([Matrix](https://matrix.org/)) or at the
    desk through a skill in the engineer's coding assistant (Claude Code, Gemini CLI,
    Codex, …). Nobody babysits a terminal.
