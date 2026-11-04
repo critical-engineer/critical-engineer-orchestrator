@@ -89,7 +89,7 @@ Credit: the research → plan → implement workflow and approvals bound to an e
 - C7. The ledger is the only store of execution status. No status is kept in the plan file. Under D10, the `tasks.md` checkboxes are written only by the orchestrator, at archive time, after checks pass. Agents never tick them; an edit to the approved file on `main` counts as a plan change (F3).
 - C8. Every decision a human makes through the chat channel is saved in the ledger. Decisions that change the plan become PRs.
 - C9. Changes to the gate code (approval, check, permission logic) always need human review, including when CEO is building itself.
-- C10. Judgment gates (see the key design principle) are cleared only by the Critical Engineer: never by a model, a worker or configuration. Each clearance is recorded with who, when and the evidence shown (C8).
+- C10. Judgment gates (see the key design principle) are cleared only by the Critical Engineer: never by a model, a worker or configuration. Each route that can clear a gate authenticates the engineer (chat: the allowlisted account, T7; skill: the transport's identity, OQ12; GitHub: a configured list of reviewer logins, never the bot), and each clearance is recorded with route, identity, time and the evidence shown (C8). A clearance from any other identity is rejected.
 
 ## 4. Failure modes
 
@@ -175,7 +175,7 @@ depends_on: [T1]
 blast_radius: medium
 check: python -m pytest tests/test_ledger.py
 ```
-Tables: plans (repo, approved_sha), tasks (id, plan_id, status, attempts, tombstoned), runs (task_id, worker, commit_sha, check_exit, check_output, cost_usd), questions (qid, task_id, text, answer, answered_at), events (append-only audit).
+Tables: plans (repo, approved_sha), tasks (id, plan_id, status, attempts, tombstoned), runs (task_id, worker, model, commit_sha, check_exit, check_output, cost_usd; `model` arrives as a ledger migration with T10), questions (qid, task_id, text, answer, answered_at), events (append-only audit).
 
 ### T3: Plan parser
 ```yaml
@@ -247,7 +247,7 @@ check: python -m pytest tests/test_dispatch.py && sudo -u ceo-worker test ! -r /
 
 ### T10: Orchestrator-run checks and evidence
 ```yaml
-depends_on: [T9, T13]
+depends_on: [T9, T12, T13]
 blast_radius: high
 check: python -m pytest tests/test_checks.py
 ```
@@ -259,7 +259,7 @@ depends_on: [T7, T10, T13]
 blast_radius: high
 check: python -m pytest tests/test_elevated.py
 ```
-Merge to main, deploy, anything that needs sudo → a request row with `blocked:needs-approval` → approved via chat `Q<n> approve`, the CEO skill, or a GitHub PR review. Approvals are structured (an idea from HumanLayer): each request shows the exact action (command, diff or target) and its arguments, and a denial carries a reason that goes back to the worker as input. Invariant: the request stores the exact action payload and its SHA-256 digest; approval fields are write-once; just before execution the digest is recomputed from what will actually run, and a mismatch is rejected and needs a new approval.
+Merge to main, deploy, anything that needs sudo → a request row with `blocked:needs-approval` → approved via chat `Q<n> approve`, the CEO skill, or a GitHub PR review. Approvals are structured (an idea from HumanLayer): each request shows the exact action (command, diff or target) and its arguments, and a denial carries a reason that goes back to the worker as input. Invariant: the request stores the exact action payload and its SHA-256 digest; approval fields are write-once; just before execution the digest is recomputed from what will actually run, and a mismatch is rejected and needs a new approval. The approver is bound too (C10): each route authenticates the engineer, the approval row records route and identity, and approvals from any other identity are rejected.
 
 ### T12: Budget enforcement
 ```yaml
@@ -285,5 +285,5 @@ Remaining CEO improvements are run through CEO itself. Then the first external p
 - OQ9. ~~Where status lives~~ Resolved with D10: the ledger holds execution status (C7); checkboxes are ticked only by the orchestrator at archive, so the archived change records what was done.
 - OQ10. Research tasks (like T0) have checks that prove a file exists, not that its findings are right. Should they always require human sign-off regardless of blast_radius?
 - OQ11. Matrix end-to-end encryption, after the POC: a vodozemac-backed Python library or an encrypting proxy (pantalaimon)? libolm is deprecated (July 2024) and python-olm wheels reportedly stop at CPython 3.12. Deferred by D11; needs a dependency decision (C2) and a backed-up key store.
-- OQ12. Transport for the CEO skill (D13), keeping D6's boundary (no new inbound ports): a CLI run over the engineer's existing SSH access, with a restricted key and forced command (simplest), an MCP server (typed tools; where does it run, and how does it reach the box's ledger?), or A2A (if agents, not only the human, will talk to CEO). Decide with a short spike at the start of T13.
+- OQ12. Transport for the CEO skill (D13), keeping D6's boundary (no new inbound ports): a CLI run over the engineer's existing SSH access, with a restricted key and forced command (simplest), an MCP server (typed tools; where does it run, and how does it reach the box's ledger?), or A2A (if agents, not only the human, will talk to CEO). Whichever transport is chosen must authenticate the caller as the engineer (C10). Decide with a short spike at the start of T13.
 - OQ13. Subscription terms: before any change to D12, re-check the provider's current terms for automated and third-party use of consumer subscriptions (Anthropic's changed several times in 2026).
