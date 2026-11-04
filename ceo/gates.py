@@ -113,11 +113,11 @@ def decide_gate(
     engineer: Engineer,
     reason: str | None = None,
 ) -> None:
-    """Record the engineer's decision. Anyone else is refused, and the attempt logged."""
-    if decision not in DECISIONS:
-        raise ValueError(f"decision must be one of {DECISIONS}")
-    if decision == "denied" and not (reason or "").strip():
-        raise GateError("a denial needs a reason; it goes back to the worker")
+    """Record the engineer's decision. Anyone else is refused, and the attempt logged.
+
+    Identity is checked before anything else about the request, so every
+    attempt by anyone else is logged, however malformed.
+    """
     row = conn.execute("SELECT * FROM gates WHERE id = ?", (gate_id,)).fetchone()
     if row is None:
         raise GateError(f"no gate {gate_id}")
@@ -130,6 +130,10 @@ def decide_gate(
             detail={"gate": gate_id, "route": route, "identity": identity, "decision": decision},
         )
         raise GateError(f"{identity!r} can't decide gates via {route} (C10)")
+    if decision not in DECISIONS:
+        raise ValueError(f"decision must be one of {DECISIONS}")
+    if decision == "denied" and not (reason or "").strip():
+        raise GateError("a denial needs a reason; it goes back to the worker")
     with conn:
         cur = conn.execute(
             "UPDATE gates SET status = ?, decided_route = ?, decided_identity = ?,"

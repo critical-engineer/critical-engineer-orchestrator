@@ -253,3 +253,15 @@ def test_engineer_from_env():
 def test_bot_can_never_be_an_approver():
     with pytest.raises(GateError, match="bot"):
         Engineer.from_env({"CEO_ENGINEER_GITHUB": "driessamyn,CEO-Bot", "CEO_GITHUB_BOT": "ceo-bot"})
+
+
+@pytest.mark.parametrize(
+    "decision, reason", [("denied", ""), ("denied", None), ("maybe", None)]
+)
+def test_malformed_attempts_by_others_are_still_logged(conn, decision, reason):
+    gate_id = open_gate(conn, 1, "elevated_action", ACTION)
+    with pytest.raises(GateError, match="C10"):
+        decide_gate(conn, gate_id, decision, route="chat", identity="@stranger:evil.example",
+                    engineer=ENGINEER, reason=reason)
+    kind, detail = events(conn)[-1]
+    assert kind == "gate.decision_refused" and detail["decision"] == decision
