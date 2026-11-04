@@ -89,7 +89,7 @@ Credit: the research → plan → implement workflow and approvals bound to an e
 - C7. The ledger is the only store of execution status. No status is kept in the plan file. Under D10, the `tasks.md` checkboxes are written only by the orchestrator, at archive time, after checks pass. Agents never tick them; an edit to the approved file on `main` counts as a plan change (F3).
 - C8. Every decision a human makes through the chat channel is saved in the ledger. Decisions that change the plan become PRs.
 - C9. Changes to the gate code (approval, check, permission logic) always need human review, including when CEO is building itself.
-- C10. Judgment gates (see the key design principle) are cleared only by the Critical Engineer: never by a model, a worker or configuration. Each route that can clear a gate authenticates the engineer (chat: the allowlisted account, T7; skill: the transport's identity, OQ12; GitHub: a configured list of reviewer logins, never the bot), and each clearance is recorded with route, identity, time and the evidence shown (C8). A clearance from any other identity is rejected.
+- C10. Judgment gates (see the key design principle) are cleared only by the Critical Engineer: never by a model, a worker or configuration. Each route that can clear a gate authenticates the engineer (chat: the allowlisted account, T7; skill: the transport's identity, OQ12; GitHub: a configured list of reviewer logins, never the bot), and each clearance is recorded with route, identity, time and the evidence shown, in the ledger's `gates` table (T14, C8). A clearance from any other identity is rejected.
 
 ## 4. Failure modes
 
@@ -175,7 +175,7 @@ depends_on: [T1]
 blast_radius: medium
 check: python -m pytest tests/test_ledger.py
 ```
-Tables: plans (repo, approved_sha), tasks (id, plan_id, status, attempts, tombstoned), runs (task_id, worker, model, commit_sha, check_exit, check_output, cost_usd; `model` arrives as a ledger migration with T10), questions (qid, task_id, text, answer, answered_at), events (append-only audit).
+Tables: plans (repo, approved_sha), tasks (id, plan_id, status, attempts, tombstoned), runs (task_id, worker, model, commit_sha, check_exit, check_output, cost_usd; `model` arrives as a ledger migration with T10), questions (qid, task_id, text, answer, answered_at), events (append-only audit). Judgment gates get their own table, `gates`, in T14.
 
 ### T3: Plan parser
 ```yaml
@@ -213,7 +213,7 @@ Event types: critic-ready, blocked, question, done, sent only to the one configu
 
 ### T7: Chat answers (inbound)
 ```yaml
-depends_on: [T6]
+depends_on: [T6, T14]
 blast_radius: high
 check: python -m pytest tests/test_answers.py
 ```
@@ -229,11 +229,19 @@ Run from the CEO skill on the engineer's subscription (D12), on request. It poin
 
 ### T13: CEO skill for the engineer's coding assistant
 ```yaml
-depends_on: [T4, T7]
+depends_on: [T4, T7, T14]
 blast_radius: medium
 check: python -m pytest tests/test_skill.py
 ```
 The desk interface (D13): a skill (Claude Code first) plus the operations behind it: scaffold a plan, status, open questions, answer, approve, take over a blocked task. Starts with a short spike to choose the transport (OQ12). Decisions made through it are recorded in the ledger like chat answers (C8).
+
+### T14: Judgment gates in the ledger
+```yaml
+depends_on: [T4]
+blast_radius: high
+check: python -m pytest tests/test_gates.py
+```
+The record that proves who cleared which gate, on what evidence (C10). A `gates` table, added by a ledger migration: `id`, `plan_id`, `task_id` (nullable), `kind` (`plan_approval`, `high_radius`, `unsanctioned_assumption`, `stale_evidence`, `elevated_action`, `escalation`), `payload` (JSON: the exact action, or the evidence shown), `payload_sha256`, `opened_at`, `status` (`open`, `approved`, `denied`), `decided_route`, `decided_identity`, `decided_at`, `reason`. Rules enforced in the schema, not only in code: `payload` and its digest never change; a gate is decided once (`open` → `approved` or `denied`, with route, identity and time all set together, and no change after that); a denial needs a reason. Opening and deciding a gate also append `gate.opened` and `gate.decided` events in the same transaction. Code that acts on an approval (T10, T11) checks the gate is `approved` and that the digest matches what is about to run.
 
 ### Phase 2: execution loop
 
@@ -247,7 +255,7 @@ check: python -m pytest tests/test_dispatch.py && sudo -u ceo-worker test ! -r /
 
 ### T10: Orchestrator-run checks and evidence
 ```yaml
-depends_on: [T9, T12, T13]
+depends_on: [T9, T12, T13, T14]
 blast_radius: high
 check: python -m pytest tests/test_checks.py
 ```
@@ -255,7 +263,7 @@ check: python -m pytest tests/test_checks.py
 
 ### T11: Elevated-action requests
 ```yaml
-depends_on: [T7, T10, T13]
+depends_on: [T7, T10, T13, T14]
 blast_radius: high
 check: python -m pytest tests/test_elevated.py
 ```
