@@ -35,7 +35,7 @@ Judgment is deciding what should be built and why, and whether what was built ac
 | Unsanctioned assumption | A worker reports an assumption the plan didn't sanction; the engineer decides whether the plan is updated or the implementation corrected (T9, F12) |
 | Stale evidence | A task's definition changed after it ran, or its evidence predates its definition (T4) |
 | Elevated action | Merge, deploy, anything needing sudo, shown as the exact action (T11) |
-| Escalation | A task the cheap models and the retry ladder couldn't finish (T10) |
+| Escalation | Before a stronger model or a takeover is used on a task the cheap retries couldn't finish (T10) |
 
 **Review effort is proportional to reasoning risk, not diff size.** `blast_radius` sets the depth: `low` proceeds on its check, with the evidence kept for later; `medium` notifies the engineer with the evidence and the Critic's pointers; `high` is a gate. Asking for judgment where none is needed is itself a failure (F11): an engineer who is asked everything learns to approve everything.
 
@@ -49,7 +49,7 @@ Each step is owned by whoever is best, and cheapest, at it. Expensive thinking h
 | 3. Approve | The engineer merges the plan PR (gate) | None |
 | 4. Execute | Workers on the box, one small task each; they report unsanctioned assumptions (D4, T9) | Cheap API models, capped (G5) |
 | 5. Verify | The orchestrator runs each task's check, then applies the gates above (G3) | None: no LLM |
-| 6. Escalate | A task that keeps failing goes to a stronger model within budget, then to the engineer via the CEO skill (T10) | API, then subscription |
+| 6. Escalate | A task that keeps failing opens an escalation gate: the engineer approves a stronger model within budget, takes it over via the CEO skill, or sends it back to the plan (T10) | API or subscription, after approval |
 | 7. Decide | Gates and questions: chat on the phone, or the CEO skill at the desk (T7, T11, T13) | None |
 
 The coding assistant is the engineer's choice: Claude Code, Gemini CLI, Codex or another. CEO reaches it through a skill (D13), not a dependency on one vendor.
@@ -259,7 +259,7 @@ depends_on: [T9, T12, T13, T14]
 blast_radius: high
 check: python -m pytest tests/test_checks.py
 ```
-`completed` only if `check` passes in a clean checkout; output and SHA are stored. Failing → retry until the attempt limit, then escalate: optionally one more attempt on a stronger model within budget (T12), then `blocked` → chat question, with a takeover path through the CEO skill (T13). Attempts and escalations are recorded per task (D12): every attempt is a `runs` row (worker, model, cost; adds `runs.model`) and increments `tasks.attempts`; each step up the ladder is an event, `task.retry`, `task.escalated` (`{from_model, to_model, reason}`) or `task.takeover` (`{by}`), so a task's full path can be rebuilt from the ledger. A `high` task whose check passes goes to a judgment gate: the Critic interrogates the result against the plan's constraints and failure modes, and it is `completed` only when the engineer signs off.
+`completed` only if `check` passes in a clean checkout; output and SHA are stored. Failing → retry until the attempt limit. Then T10 opens an `escalation` gate (T14) with the failed evidence and the proposed `{from_model, to_model}` change, and waits: the engineer approves one attempt on a stronger model within budget (T12), takes the task over through the CEO skill (T13), or denies with a reason (e.g. the plan needs revising). If the gate is denied or the approved attempt also fails, the task is `blocked`. Attempts and escalations are recorded per task (D12): every attempt is a `runs` row (worker, model, cost; adds `runs.model`) and increments `tasks.attempts`; each step up the ladder is an event, `task.retry`, `task.escalated` (`{from_model, to_model, reason}`) or `task.takeover` (`{by}`), so a task's full path can be rebuilt from the ledger. A `high` task whose check passes goes to a judgment gate: the Critic interrogates the result against the plan's constraints and failure modes, and it is `completed` only when the engineer signs off.
 
 ### T11: Elevated-action requests
 ```yaml
