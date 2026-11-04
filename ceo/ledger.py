@@ -127,20 +127,11 @@ _MIGRATIONS = {
             CHECK ((status = 'open') = (decided_at IS NULL)),
             CHECK (status <> 'denied' OR length(trim(coalesce(reason, ''), {_WHITESPACE_SQL})) > 0)
         )""",
-        # INSERT OR REPLACE deletes the old row without firing delete triggers
-        # (recursive_triggers is off), so an insert may never reuse an id: that
-        # would reset a decided gate, or overwrite an audit event.
-        """CREATE TRIGGER gates_no_replace BEFORE INSERT ON gates
-           WHEN EXISTS (SELECT 1 FROM gates WHERE id = NEW.id)
-           BEGIN SELECT RAISE(ABORT, 'a gate is never replaced'); END""",
-        """CREATE TRIGGER events_no_replace BEFORE INSERT ON events
-           WHEN EXISTS (SELECT 1 FROM events WHERE id = NEW.id)
-           BEGIN SELECT RAISE(ABORT, 'events is append-only'); END""",
         """CREATE TRIGGER gates_open_on_insert BEFORE INSERT ON gates
            WHEN NEW.status <> 'open'
            BEGIN SELECT RAISE(ABORT, 'a gate is opened, not inserted decided'); END""",
         """CREATE TRIGGER gates_payload_immutable
-           BEFORE UPDATE OF plan_id, task_id, kind, payload, payload_sha256, opened_at ON gates
+           BEFORE UPDATE OF id, plan_id, task_id, kind, payload, payload_sha256, opened_at ON gates
            BEGIN SELECT RAISE(ABORT, 'a gate''s payload is immutable'); END""",
         """CREATE TRIGGER gates_decided_once BEFORE UPDATE ON gates
            WHEN OLD.status <> 'open'
@@ -216,6 +207,12 @@ def open_ledger(path: str | Path, *, timeout: float = 30.0) -> sqlite3.Connectio
         conn.close()
         raise
     conn.execute("PRAGMA foreign_keys = ON")
+    # REPLACE (INSERT OR REPLACE, UPDATE OR REPLACE) deletes conflicting rows,
+    # and SQLite fires delete triggers for those only with recursive triggers
+    # on. With it on, the "never deleted" / "append-only" triggers also stop a
+    # REPLACE from resetting a decided gate or overwriting an audit event. Our
+    # triggers only raise, so nothing actually recurses.
+    conn.execute("PRAGMA recursive_triggers = ON")
     return conn
 
 

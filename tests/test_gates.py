@@ -273,7 +273,7 @@ def test_malformed_attempts_by_others_are_still_logged(conn, decision, reason):
 def test_schema_insert_or_replace_cannot_reset_a_decided_gate(conn):
     gate_id = open_gate(conn, 1, "elevated_action", ACTION)
     approve(conn, gate_id)
-    with pytest.raises(sqlite3.IntegrityError, match="never replaced"):
+    with pytest.raises(sqlite3.IntegrityError, match="never deleted"):
         conn.execute(
             "INSERT OR REPLACE INTO gates (id, plan_id, kind, payload, payload_sha256)"
             " VALUES (?, 1, 'elevated_action', '{}', ?)",
@@ -316,3 +316,33 @@ def test_schema_accepts_a_real_reason_with_surrounding_whitespace(conn):
         ("  needs a smaller blast radius \t", gate_id),
     )
     assert gate(conn, gate_id)["status"] == "denied"
+
+
+def test_schema_update_or_replace_cannot_move_a_gate_onto_a_decided_one(conn):
+    decided = open_gate(conn, 1, "elevated_action", ACTION)
+    approve(conn, decided)
+    other = open_gate(conn, 1, "elevated_action", ACTION | {"pr": 99})
+    for sql in ("UPDATE OR REPLACE gates SET id = ? WHERE id = ?",
+                "UPDATE OR REPLACE gates SET rowid = ? WHERE id = ?"):
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(sql, (decided, other))
+    row = gate(conn, decided)
+    assert (row["status"], json.loads(row["payload"])) == ("approved", ACTION)
+
+
+def test_schema_gate_id_is_immutable(conn):
+    gate_id = open_gate(conn, 1, "elevated_action", ACTION)
+    with pytest.raises(sqlite3.IntegrityError, match="immutable"):
+        conn.execute("UPDATE gates SET id = 1000 WHERE id = ?", (gate_id,))
+
+
+def test_planted_ids_do_not_block_normal_inserts(conn):
+    # Regression: a BEFORE INSERT guard on NEW.id saw -1 for auto-assigned ids,
+    # so one planted row with id -1 blocked every later insert.
+    conn.execute("INSERT INTO events (id, kind) VALUES (-1, 'planted')")
+    conn.execute(
+        "INSERT INTO gates (id, plan_id, kind, payload, payload_sha256)"
+        " VALUES (-1, 1, 'escalation', '{}', ?)", ("0" * 64,)
+    )
+    open_gate(conn, 1, "elevated_action", ACTION)  # auto ids still work
+    assert conn.execute("SELECT count(*) FROM gates").fetchone()[0] == 2
