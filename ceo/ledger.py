@@ -24,6 +24,12 @@ GATE_KINDS = (
 )
 GATE_ROUTES = ("chat", "skill", "github")
 
+# Every character Python's str.strip() removes, so the schema's "reason is not
+# blank" rule matches the code's (SQLite's trim() only strips spaces by default).
+_WHITESPACE_SQL = "char({})".format(
+    ", ".join(str(c) for c in range(0x110000) if chr(c).isspace())
+)
+
 _SCHEMA = f"""
 CREATE TABLE plans (
     id           INTEGER PRIMARY KEY,
@@ -119,8 +125,17 @@ _MIGRATIONS = {
             CHECK ((status = 'open') = (decided_route IS NULL)),
             CHECK ((status = 'open') = (decided_identity IS NULL)),
             CHECK ((status = 'open') = (decided_at IS NULL)),
-            CHECK (status <> 'denied' OR length(trim(coalesce(reason, ''))) > 0)
+            CHECK (status <> 'denied' OR length(trim(coalesce(reason, ''), {_WHITESPACE_SQL})) > 0)
         )""",
+        # INSERT OR REPLACE deletes the old row without firing delete triggers
+        # (recursive_triggers is off), so an insert may never reuse an id: that
+        # would reset a decided gate, or overwrite an audit event.
+        """CREATE TRIGGER gates_no_replace BEFORE INSERT ON gates
+           WHEN EXISTS (SELECT 1 FROM gates WHERE id = NEW.id)
+           BEGIN SELECT RAISE(ABORT, 'a gate is never replaced'); END""",
+        """CREATE TRIGGER events_no_replace BEFORE INSERT ON events
+           WHEN EXISTS (SELECT 1 FROM events WHERE id = NEW.id)
+           BEGIN SELECT RAISE(ABORT, 'events is append-only'); END""",
         """CREATE TRIGGER gates_open_on_insert BEFORE INSERT ON gates
            WHEN NEW.status <> 'open'
            BEGIN SELECT RAISE(ABORT, 'a gate is opened, not inserted decided'); END""",

@@ -265,3 +265,54 @@ def test_malformed_attempts_by_others_are_still_logged(conn, decision, reason):
                     engineer=ENGINEER, reason=reason)
     kind, detail = events(conn)[-1]
     assert kind == "gate.decision_refused" and detail["decision"] == decision
+
+
+# schema hardening (CodeRabbit review on #8)
+
+
+def test_schema_insert_or_replace_cannot_reset_a_decided_gate(conn):
+    gate_id = open_gate(conn, 1, "elevated_action", ACTION)
+    approve(conn, gate_id)
+    with pytest.raises(sqlite3.IntegrityError, match="never replaced"):
+        conn.execute(
+            "INSERT OR REPLACE INTO gates (id, plan_id, kind, payload, payload_sha256)"
+            " VALUES (?, 1, 'elevated_action', '{}', ?)",
+            (gate_id, "0" * 64),
+        )
+    assert gate(conn, gate_id)["status"] == "approved"
+
+
+def test_schema_insert_or_replace_cannot_overwrite_an_event(conn):
+    open_gate(conn, 1, "elevated_action", ACTION)
+    event_id = conn.execute("SELECT max(id) FROM events").fetchone()[0]
+    with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+        conn.execute("INSERT OR REPLACE INTO events (id, kind) VALUES (?, 'forged')", (event_id,))
+    assert conn.execute("SELECT kind FROM events WHERE id = ?", (event_id,)).fetchone()[0] == "gate.opened"
+
+
+def test_schema_new_gates_and_events_still_insert(conn):
+    open_gate(conn, 1, "elevated_action", ACTION)
+    open_gate(conn, 1, "elevated_action", ACTION | {"pr": 13})
+    assert conn.execute("SELECT count(*) FROM gates").fetchone()[0] == 2
+
+
+@pytest.mark.parametrize("reason", ["\t\n", "\r\x0b\x0c", "  ", "　 "])
+def test_schema_denial_reason_cannot_be_any_whitespace(conn, reason):
+    assert not reason.strip()  # blank by Python's definition
+    gate_id = open_gate(conn, 1, "elevated_action", ACTION)
+    with pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "UPDATE gates SET status = 'denied', decided_route = 'chat', decided_identity = 'x',"
+            " decided_at = 'now', reason = ? WHERE id = ?",
+            (reason, gate_id),
+        )
+
+
+def test_schema_accepts_a_real_reason_with_surrounding_whitespace(conn):
+    gate_id = open_gate(conn, 1, "elevated_action", ACTION)
+    conn.execute(
+        "UPDATE gates SET status = 'denied', decided_route = 'chat', decided_identity = 'x',"
+        " decided_at = 'now', reason = ? WHERE id = ?",
+        ("  needs a smaller blast radius \t", gate_id),
+    )
+    assert gate(conn, gate_id)["status"] == "denied"
