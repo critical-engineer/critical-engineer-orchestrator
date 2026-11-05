@@ -33,7 +33,9 @@ ROUTE = "chat"
 
 HELP = "Reply with 'Q<n> <answer>'. For an approval: 'Q<n> approve' or 'Q<n> deny <reason>'."
 
-_ANSWER = re.compile(r"\s*[Qq](\d+)\s*[:.\-]?\s+(\S.*)", re.DOTALL)
+# At most 18 digits: a longer number can't be a question id and would overflow
+# SQLite's INTEGER, failing every poll on the same message.
+_ANSWER = re.compile(r"\s*[Qq](\d{1,18})\s*[:.\-]?\s+(\S.*)", re.DOTALL)
 _APPROVE = {"approve", "approved", "yes"}
 _DENY = {"deny", "denied", "reject", "no"}
 

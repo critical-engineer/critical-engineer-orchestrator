@@ -260,6 +260,7 @@ def write_env_value(path: str | os.PathLike, key: str, value: str) -> None:
     else:
         lines.append(f"{key}={value}")
     directory = os.path.dirname(path) or "."
+    os.makedirs(directory, mode=0o700, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=directory, prefix=".ceo-env-")
     try:
         os.fchmod(fd, 0o600)
@@ -288,13 +289,25 @@ def main(argv: list[str]) -> int:
             if not homeserver:
                 raise ChannelError("not set: CEO_MATRIX_HOMESERVER")
             env_file = os.path.expanduser(os.environ.get("CEO_ENV_FILE", "~/.config/ceo/env"))
-            password = getpass.getpass(f"Password for {argv[1]} (used once, not stored): ")
-            session = password_login(homeserver, argv[1], password)
+            # Make sure the token can be saved *before* logging in: a failure
+            # afterwards would leave a session on the server and no token here.
+            env_dir = os.path.dirname(env_file) or "."
+            os.makedirs(env_dir, mode=0o700, exist_ok=True)
+            if not os.access(env_dir, os.W_OK):
+                raise ChannelError(f"can't write to {env_dir}")
+            user = argv[1]
+            password = getpass.getpass(f"Password for {user} (used once, not stored): ")
+            session = password_login(homeserver, user, password)
+            del password
             write_env_value(env_file, "CEO_MATRIX_ACCESS_TOKEN", session["access_token"])
-            expires = session.get("expires_in_ms")
-            print(f"ok: logged in as {session.get('user_id', argv[1])} (device {session.get('device_id')});"
-                  f" token written to {env_file}")
-            print("token expiry: " + (f"{expires} ms (it will need refreshing)" if expires else "none (long-lived)"))
+            long_lived = "expires_in_ms" not in session
+            del session
+            # Print nothing from the login response: only what we already knew.
+            print(f"ok: logged in as {user}; token written to {env_file}")
+            if long_lived:
+                print("token expiry: none (long-lived)")
+            else:
+                print("token expiry: it expires and will need refreshing")
             return 0
         # Built directly: under `python -m` this module is __main__, so an
         # isinstance check against ceo.channels.matrix.MatrixChannel would fail.
@@ -305,7 +318,7 @@ def main(argv: list[str]) -> int:
         else:
             channel.send("[CEO] channel check: if you can read this, notifications work.")
             print(f"ok: room verified and test message sent to {channel.human_id}")
-    except ChannelError as exc:
+    except (ChannelError, OSError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0

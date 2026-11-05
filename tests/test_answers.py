@@ -287,3 +287,11 @@ def test_receive_needs_a_next_batch(api, matrix):
     api.routes[("GET", f"{API}/sync")] = (200, {})
     with pytest.raises(Exception, match="next_batch"):
         matrix.receive("s1", wait=0)
+
+
+@pytest.mark.parametrize("number", ["9" * 19, "9" * 30, "9" * 5000])
+def test_oversized_question_numbers_get_help_and_do_not_block_polling(conn, channel, number):
+    assert reply(conn, f"Q{number} yes") == HELP
+    channel.inbox = [InboundBatch([Inbound("$1", ME, f"Q{number} yes")], "c1")]
+    poll_once(conn, channel, ENGINEER)  # must not raise
+    assert conn.execute("SELECT value FROM cursors WHERE channel = 'fake'").fetchone()[0] == "c1"

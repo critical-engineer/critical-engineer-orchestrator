@@ -369,3 +369,44 @@ def test_cli_login_writes_the_token_without_printing_it(api, monkeypatch, tmp_pa
     assert "syt_secret_new" not in out and "hunter2" not in out
     assert "token expiry: none (long-lived)" in out
     assert env.read_text() == "CEO_MATRIX_ACCESS_TOKEN=syt_secret_new\n"
+
+
+def test_cli_login_creates_a_missing_settings_directory_privately(api, monkeypatch, tmp_path):
+    import os
+    import stat
+
+    api.routes[("POST", f"{API}/login")] = (200, {"access_token": "syt_new", "device_id": "D1"})
+    env = tmp_path / "fresh" / "ceo" / "env"
+    monkeypatch.setenv("CEO_MATRIX_HOMESERVER", api.url)
+    monkeypatch.setenv("CEO_ENV_FILE", str(env))
+    monkeypatch.setattr(matrix.getpass, "getpass", lambda prompt: "hunter2")
+    assert matrix.main(["login", BOT]) == 0
+    assert env.read_text() == "CEO_MATRIX_ACCESS_TOKEN=syt_new\n"
+    assert stat.S_IMODE(os.stat(env.parent).st_mode) == 0o700
+
+
+def test_cli_login_checks_the_settings_file_can_be_written_before_logging_in(api, monkeypatch, tmp_path, capsys):
+    readonly = tmp_path / "ro"
+    readonly.mkdir(mode=0o500)
+    monkeypatch.setenv("CEO_MATRIX_HOMESERVER", api.url)
+    monkeypatch.setenv("CEO_ENV_FILE", str(readonly / "env"))
+    monkeypatch.setattr(matrix.getpass, "getpass", lambda prompt: pytest.fail("asked for the password"))
+    try:
+        assert matrix.main(["login", BOT]) == 1
+    finally:
+        readonly.chmod(0o700)
+    assert "can't write" in capsys.readouterr().err
+    assert not [r for r in api.requests if r[0] == "POST"]  # never logged in
+
+
+def test_cli_login_prints_nothing_from_the_server_response(api, monkeypatch, tmp_path, capsys):
+    api.routes[("POST", f"{API}/login")] = (
+        200, {"access_token": "syt_x", "device_id": "DEVICE_FROM_SERVER", "user_id": "@spoofed:x", "expires_in_ms": 300000},
+    )
+    monkeypatch.setenv("CEO_MATRIX_HOMESERVER", api.url)
+    monkeypatch.setenv("CEO_ENV_FILE", str(tmp_path / "env"))
+    monkeypatch.setattr(matrix.getpass, "getpass", lambda prompt: "hunter2")
+    assert matrix.main(["login", BOT]) == 0
+    out = capsys.readouterr().out
+    assert "DEVICE_FROM_SERVER" not in out and "@spoofed" not in out and "300000" not in out
+    assert f"logged in as {BOT}" in out and "it expires and will need refreshing" in out
