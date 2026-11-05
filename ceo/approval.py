@@ -119,7 +119,8 @@ class GitHub:
     def merged_by(self, number: int) -> str | None:
         pr = self._get(f"/repos/{self.repo}/pulls/{number}")
         merger = pr.get("merged_by") if isinstance(pr, dict) else None
-        return merger.get("login") if isinstance(merger, dict) else None
+        login = merger.get("login") if isinstance(merger, dict) else None
+        return login if isinstance(login, str) and login else None
 
 
 @dataclass(frozen=True)
@@ -182,11 +183,15 @@ def check_plan(
         )
 
     payload = {"repo": plan["repo"], "change": change, "tree": tree}
+    # Only the latest plan gate can be reused, and only for the same contents.
+    # An older decision never carries over: a revert to a superseded version
+    # needs a fresh decision, just like any other change (F3).
     gate = conn.execute(
-        "SELECT * FROM gates WHERE plan_id = ? AND kind = 'plan_approval' AND payload_sha256 = ?"
-        " ORDER BY id DESC LIMIT 1",
-        (plan_id, digest(payload)),
+        "SELECT * FROM gates WHERE plan_id = ? AND kind = 'plan_approval' ORDER BY id DESC LIMIT 1",
+        (plan_id,),
     ).fetchone()
+    if gate is not None and gate["payload_sha256"] != digest(payload):
+        gate = None
     gate_id = gate["id"] if gate else open_gate(conn, plan_id, "plan_approval", payload)
     status = gate["status"] if gate else "open"
 

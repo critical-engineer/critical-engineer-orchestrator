@@ -236,3 +236,27 @@ def test_merge_commit_must_be_on_main(conn, repos, github, api):
     git(repos.ceo, "fetch", "-q", "origin", "side")
     github_says(api, side)
     assert check(conn, repos, github).status == "pending"
+
+
+def test_revert_to_a_superseded_plan_needs_a_fresh_decision(conn, repos, github, api):
+    # v1 approved, then v2 approved, then a direct push restores v1's contents.
+    _, merge1 = repos.merge_pr("plan-v1", PLAN_V1)
+    github_says(api, merge1)
+    assert check(conn, repos, github).status == "approved"
+    _, merge2 = repos.merge_pr("plan-v2", PLAN_V2)
+    github_says(api, merge2, number=8)
+    assert check(conn, repos, github).status == "approved"
+    repos.commit(PLAN_V1, "revert plan to v1, pushed directly")
+    api.routes[("GET", f"/repos/{REPO}/commits/")] = (200, [])  # no PR for the revert
+    result = check(conn, repos, github)
+    assert result.status == "pending" and approved_sha(conn) is None
+    gates = conn.execute("SELECT status FROM gates ORDER BY id").fetchall()
+    assert [g[0] for g in gates] == ["approved", "approved", "open"]  # a new gate for the revert
+
+
+@pytest.mark.parametrize("login", [42, {"name": "x"}, "", None, ["driessamyn"]])
+def test_malformed_merger_login_is_not_trusted(conn, repos, github, api, login):
+    _, merge = repos.merge_pr("plan-v1", PLAN_V1)
+    github_says(api, merge)
+    api.routes[("GET", f"/repos/{REPO}/pulls/7")] = (200, {"merged_by": {"login": login}})
+    assert check(conn, repos, github).status == "pending"
