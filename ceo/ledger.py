@@ -10,9 +10,25 @@ import json
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 TASK_STATUSES = ("pending", "running", "completed", "blocked")
+
+GATE_KINDS = (
+    "plan_approval",
+    "high_radius",
+    "unsanctioned_assumption",
+    "stale_evidence",
+    "elevated_action",
+    "escalation",
+)
+GATE_ROUTES = ("chat", "skill", "github")
+
+# Every character Python's str.strip() removes, so the schema's "reason is not
+# blank" rule matches the code's (SQLite's trim() only strips spaces by default).
+_WHITESPACE_SQL = "char({})".format(
+    ", ".join(str(c) for c in range(0x110000) if chr(c).isspace())
+)
 
 _SCHEMA = f"""
 CREATE TABLE plans (
@@ -87,6 +103,42 @@ _MIGRATIONS = {
         # sync to spot tasks that changed after they ran (T4, F9).
         "ALTER TABLE tasks ADD COLUMN definition_hash TEXT",
     ],
+    3: [
+        # Judgment gates (T14, C10): the record of who cleared which gate, by
+        # which route, on what evidence. The rules live in the schema so no
+        # code path can bypass them.
+        f"""CREATE TABLE gates (
+            id               INTEGER PRIMARY KEY,
+            plan_id          INTEGER NOT NULL REFERENCES plans (id),
+            task_id          TEXT,
+            kind             TEXT NOT NULL CHECK (kind IN ({", ".join(f"'{k}'" for k in GATE_KINDS)})),
+            payload          TEXT NOT NULL,          -- canonical JSON: the exact action or evidence
+            payload_sha256   TEXT NOT NULL CHECK (length(payload_sha256) = 64),
+            opened_at        TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+            status           TEXT NOT NULL DEFAULT 'open'
+                             CHECK (status IN ('open', 'approved', 'denied')),
+            decided_route    TEXT CHECK (decided_route IS NULL OR decided_route IN ({", ".join(f"'{r}'" for r in GATE_ROUTES)})),
+            decided_identity TEXT,
+            decided_at       TEXT,
+            reason           TEXT,
+            FOREIGN KEY (plan_id, task_id) REFERENCES tasks (plan_id, id),
+            CHECK ((status = 'open') = (decided_route IS NULL)),
+            CHECK ((status = 'open') = (decided_identity IS NULL)),
+            CHECK ((status = 'open') = (decided_at IS NULL)),
+            CHECK (status <> 'denied' OR length(trim(coalesce(reason, ''), {_WHITESPACE_SQL})) > 0)
+        )""",
+        """CREATE TRIGGER gates_open_on_insert BEFORE INSERT ON gates
+           WHEN NEW.status <> 'open'
+           BEGIN SELECT RAISE(ABORT, 'a gate is opened, not inserted decided'); END""",
+        """CREATE TRIGGER gates_payload_immutable
+           BEFORE UPDATE OF id, plan_id, task_id, kind, payload, payload_sha256, opened_at ON gates
+           BEGIN SELECT RAISE(ABORT, 'a gate''s payload is immutable'); END""",
+        """CREATE TRIGGER gates_decided_once BEFORE UPDATE ON gates
+           WHEN OLD.status <> 'open'
+           BEGIN SELECT RAISE(ABORT, 'a gate is decided once'); END""",
+        """CREATE TRIGGER gates_no_delete BEFORE DELETE ON gates
+           BEGIN SELECT RAISE(ABORT, 'gates are never deleted'); END""",
+    ],
 }
 
 
@@ -155,6 +207,12 @@ def open_ledger(path: str | Path, *, timeout: float = 30.0) -> sqlite3.Connectio
         conn.close()
         raise
     conn.execute("PRAGMA foreign_keys = ON")
+    # REPLACE (INSERT OR REPLACE, UPDATE OR REPLACE) deletes conflicting rows,
+    # and SQLite fires delete triggers for those only with recursive triggers
+    # on. With it on, the "never deleted" / "append-only" triggers also stop a
+    # REPLACE from resetting a decided gate or overwriting an audit event. Our
+    # triggers only raise, so nothing actually recurses.
+    conn.execute("PRAGMA recursive_triggers = ON")
     return conn
 
 
