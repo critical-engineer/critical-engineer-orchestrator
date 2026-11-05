@@ -13,14 +13,24 @@ Configuration (environment):
   CEO_MATRIX_HUMAN         the human's Matrix ID (the only other member), e.g. @me:matrix.org
 
 Setup helpers (run as the orchestrator user, with the variables above set):
+  python -m ceo.channels.matrix login @bot:server  get the bot's access token (asks for
+                                                   its password; needs a real terminal)
   python -m ceo.channels.matrix join    accept the room invite as the bot
   python -m ceo.channels.matrix check   verify the room and send a test message
+
+Why `login`: a token copied out of Element is an OAuth token the app keeps
+refreshing, so it soon stops working for the bot. A password login gives the
+bot its own session; the password is used once and never stored, and the
+token is written straight into the settings file (CEO_ENV_FILE, default
+~/.config/ceo/env), never printed.
 """
 
+import getpass
 import json
 import os
 import re
 import sys
+import tempfile
 import urllib.error
 import urllib.request
 import uuid
@@ -195,6 +205,73 @@ class MatrixChannel:
         self._request("POST", f"/join/{self._room}", {})
 
 
+def password_login(homeserver: str, user_id: str, password: str, *, timeout: float = 30) -> dict:
+    """Log in as ``user_id``; returns the server's response (access_token, device_id, ...)."""
+    homeserver = homeserver.rstrip("/")
+    check_transport(homeserver, "CEO_MATRIX_HOMESERVER")
+    if not _USER_ID.fullmatch(user_id):
+        raise ChannelError("the bot's user must be a Matrix ID, e.g. @ceo-bot:matrix.org")
+    body = {
+        "type": "m.login.password",
+        "identifier": {"type": "m.id.user", "user": user_id},
+        "password": password,
+        "initial_device_display_name": "CEO orchestrator",
+    }
+    request = urllib.request.Request(
+        homeserver + _API + "/login",
+        data=json.dumps(body).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        raw = open_url(request, timeout)
+    except urllib.error.HTTPError as exc:
+        try:
+            errcode = json.loads(exc.read()).get("errcode", "")
+        except (OSError, ValueError, AttributeError):
+            errcode = ""
+        raise MatrixHTTPError("POST", "/login", exc.code, errcode) from exc
+    try:
+        data = json.loads(raw)
+    except ValueError as exc:
+        raise ChannelError("POST /login: response is not JSON") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("access_token"), str):
+        raise ChannelError("POST /login: no access token in the response")
+    return data
+
+
+def write_env_value(path: str | os.PathLike, key: str, value: str) -> None:
+    """Set ``key=value`` in a KEY=VALUE settings file, keeping it private (0600).
+
+    Written to a temporary file in the same directory and renamed into place,
+    so a crash can't leave a half-written file.
+    """
+    if "\n" in value or "\r" in value:
+        raise ChannelError(f"{key} can't contain a line break")
+    path = os.fspath(path)
+    lines = []
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    for i, line in enumerate(lines):
+        if line.startswith(f"{key}="):
+            lines[i] = f"{key}={value}"
+            break
+    else:
+        lines.append(f"{key}={value}")
+    directory = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=directory, prefix=".ceo-env-")
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
 class MatrixHTTPError(ChannelError):
     def __init__(self, method: str, path: str, status: int, errcode: str):
         self.status = status
@@ -202,10 +279,23 @@ class MatrixHTTPError(ChannelError):
 
 
 def main(argv: list[str]) -> int:
-    if argv not in (["join"], ["check"]):
-        print("usage: python -m ceo.channels.matrix join|check", file=sys.stderr)
+    if not (argv in (["join"], ["check"]) or (len(argv) == 2 and argv[0] == "login")):
+        print("usage: python -m ceo.channels.matrix login @bot:server | join | check", file=sys.stderr)
         return 2
     try:
+        if argv[0] == "login":
+            homeserver = os.environ.get("CEO_MATRIX_HOMESERVER")
+            if not homeserver:
+                raise ChannelError("not set: CEO_MATRIX_HOMESERVER")
+            env_file = os.path.expanduser(os.environ.get("CEO_ENV_FILE", "~/.config/ceo/env"))
+            password = getpass.getpass(f"Password for {argv[1]} (used once, not stored): ")
+            session = password_login(homeserver, argv[1], password)
+            write_env_value(env_file, "CEO_MATRIX_ACCESS_TOKEN", session["access_token"])
+            expires = session.get("expires_in_ms")
+            print(f"ok: logged in as {session.get('user_id', argv[1])} (device {session.get('device_id')});"
+                  f" token written to {env_file}")
+            print("token expiry: " + (f"{expires} ms (it will need refreshing)" if expires else "none (long-lived)"))
+            return 0
         # Built directly: under `python -m` this module is __main__, so an
         # isinstance check against ceo.channels.matrix.MatrixChannel would fail.
         channel = MatrixChannel.from_env(os.environ)
