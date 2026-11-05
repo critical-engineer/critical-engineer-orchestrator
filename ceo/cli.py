@@ -13,14 +13,14 @@ identity comes from authorized_keys, never from the client (see docs/skill.md):
 
   command="<venv>/bin/python -m ceo.cli skill-shell --env-file <env> <identity>",restrict ssh-ed25519 AAAA...
 
-``skill-shell`` reads the requested command from SSH_ORIGINAL_COMMAND, splits
-it without a shell, and runs it only if it's one of the commands above.
+``skill-shell`` reads the requested command from SSH_ORIGINAL_COMMAND, runs it
+only if it's one of the commands above, and passes an answer through exactly
+as sent. No shell is involved.
 """
 
 import argparse
 import json
 import os
-import shlex
 import sqlite3
 import sys
 
@@ -136,12 +136,18 @@ def skill_shell(original_command: str | None, identity: str, env: dict[str, str]
     """The SSH forced-command entry: allowlisted commands only, identity from the key."""
     if not original_command:
         return 2, f"no command; use one of: {', '.join(SKILL_COMMANDS)}"
-    try:
-        argv = shlex.split(original_command)
-    except ValueError:
-        return 2, "could not parse the command"
+    # SSH joins the client's arguments with spaces, so the command arrives as
+    # one string. Split off only the command and, for 'answer', the question
+    # number; the rest is the engineer's answer, kept exactly as sent (quotes
+    # and apostrophes included). No shell ever sees it.
+    argv = original_command.split(maxsplit=2)
     if not argv or argv[0] not in SKILL_COMMANDS:
         return 2, f"not allowed: {argv[0] if argv else ''!r}; use one of: {', '.join(SKILL_COMMANDS)}"
+    if argv[0] == "answer":
+        if len(argv) != 3 or not argv[1].isascii() or not argv[1].isdigit():
+            return 2, "usage: answer <n> <text...>"
+    elif len(argv) != 1:
+        return 2, f"usage: {argv[0]} takes no arguments"
     conn = open_ledger(ledger_path(env))
     try:
         return run(argv, identity=identity, conn=conn, engineer=Engineer.from_env(env))

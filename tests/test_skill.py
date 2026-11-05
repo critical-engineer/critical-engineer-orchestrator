@@ -89,12 +89,16 @@ def test_gate_approval_through_the_skill(env):
     conn.close()
 
 
-def test_quoted_denial_reason(env):
+def test_answer_text_is_kept_exactly_as_sent(env):
+    # SSH joins arguments with spaces: `ssh ceo-box answer 7 "don't deploy"`
+    # arrives as `answer 7 don't deploy`. Apostrophes and quotes are the
+    # engineer's words, not transport syntax, and answers can't be edited.
     qid, _ = ask(env, "Merge?", ACTION)
-    code, out = shell(env, f"answer {qid} deny 'touches the gate code; needs review'")
+    reason = "don't deploy; it \"touches\" the gate code 'today'"
+    code, out = shell(env, f"answer {qid} deny {reason}")
     assert code == 0
     conn = ledger(env)
-    assert conn.execute("SELECT reason FROM gates").fetchone()[0] == "touches the gate code; needs review"
+    assert conn.execute("SELECT reason FROM gates").fetchone()[0] == reason
     conn.close()
 
 
@@ -129,7 +133,9 @@ def test_no_skill_identity_configured_means_read_only(env):
         "sh -c status",
         "skill-shell skill:other",  # can't re-enter with another identity
         "status; rm -rf /",          # no shell: ';' is just part of a word
-        "answer 1 'unclosed",
+        "answer x yes",               # not a number
+        "answer 1",                   # no answer text
+        "status extra",               # read commands take no arguments
         "python -c 'import os'",
     ],
 )
@@ -179,8 +185,8 @@ def test_forced_command_end_to_end(env, tmp_path):
             capture_output=True, text=True, timeout=30, cwd=ROOT,
         )
 
-    ok = run(f"answer {qid} 8096")
-    assert ok.returncode == 0 and f"Q{qid}: recorded" in ok.stdout
+    ok = run(f"answer {qid} 8096, don't use \"8080\"")
+    assert ok.returncode == 0 and f"Q{qid}: recorded (8096, don't use \"8080\")." in ok.stdout
     refused = run("rm -rf /")
     assert refused.returncode == 2 and "not allowed" in refused.stderr
 
