@@ -25,9 +25,9 @@ import urllib.error
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
-from ceo.notify import ChannelError, check_transport, open_url
+from ceo.notify import ChannelError, Inbound, InboundBatch, check_transport, open_url
 
 _USER_ID = re.compile(r"@[^:\s]+:\S+")
 _ROOM_ID = re.compile(r"![^\s/]+")
@@ -66,7 +66,9 @@ class MatrixChannel:
     def _room(self) -> str:
         return quote(self.room_id, safe="")
 
-    def _request(self, method: str, path: str, body: dict | None = None) -> dict:
+    def _request(
+        self, method: str, path: str, body: dict | None = None, *, timeout: float | None = None
+    ) -> dict:
         request = urllib.request.Request(
             self.homeserver + _API + path,
             data=json.dumps(body).encode("utf-8") if body is not None else None,
@@ -77,19 +79,19 @@ class MatrixChannel:
             method=method,
         )
         try:
-            raw = open_url(request, self.timeout)
+            raw = open_url(request, self.timeout if timeout is None else timeout)
         except urllib.error.HTTPError as exc:
             try:
                 errcode = json.loads(exc.read()).get("errcode", "")
             except (OSError, ValueError, AttributeError):
                 errcode = ""
-            raise MatrixHTTPError(method, path, exc.code, errcode) from exc
+            raise MatrixHTTPError(method, path.split("?")[0], exc.code, errcode) from exc
         try:
             data = json.loads(raw or b"{}")
         except ValueError as exc:
-            raise ChannelError(f"{method} {path}: response is not JSON") from exc
+            raise ChannelError(f"{method} {path.split('?')[0]}: response is not JSON") from exc
         if not isinstance(data, dict):
-            raise ChannelError(f"{method} {path}: unexpected response")
+            raise ChannelError(f"{method} {path.split('?')[0]}: unexpected response")
         return data
 
     def _field(self, data: dict, key: str, kind: type):
@@ -147,6 +149,47 @@ class MatrixChannel:
             f"/rooms/{self._room}/send/m.room.message/{uuid.uuid4().hex}",
             {"msgtype": "m.text", "body": message},
         )
+
+    def receive(self, cursor: str | None, *, wait: float = 30) -> InboundBatch:
+        """New text messages in the room since ``cursor`` (a Matrix sync token).
+
+        With no cursor, returns none and a cursor for "now": the first run
+        doesn't replay the room's history. The bot's own messages and edits
+        are skipped. Long-polls up to ``wait`` seconds for something new.
+        """
+        sync_filter = {
+            "room": {
+                "rooms": [self.room_id],
+                "timeline": {"limit": 50, "types": ["m.room.message"]},
+                "state": {"types": []},
+                "ephemeral": {"types": []},
+                "account_data": {"types": []},
+            },
+            "presence": {"types": []},
+            "account_data": {"types": []},
+        }
+        params = {"filter": json.dumps(sync_filter), "timeout": str(int(wait * 1000) if cursor else 0)}
+        if cursor:
+            params["since"] = cursor
+        data = self._request("GET", "/sync?" + urlencode(params), timeout=wait + self.timeout)
+        next_cursor = self._field(data, "next_batch", str)
+        if cursor is None:
+            return InboundBatch([], next_cursor)
+        timeline = data.get("rooms", {}).get("join", {}).get(self.room_id, {}).get("timeline", {})
+        bot = self.bot_id()
+        messages = []
+        for event in timeline.get("events", []):
+            content = event.get("content") or {}
+            if (
+                event.get("type") != "m.room.message"
+                or event.get("sender") == bot
+                or content.get("msgtype") != "m.text"
+                or not isinstance(content.get("body"), str)
+                or (content.get("m.relates_to") or {}).get("rel_type") == "m.replace"
+            ):
+                continue
+            messages.append(Inbound(event.get("event_id", ""), event.get("sender", ""), content["body"]))
+        return InboundBatch(messages, next_cursor, gap=bool(timeline.get("limited")))
 
     def join(self) -> None:
         self._request("POST", f"/join/{self._room}", {})

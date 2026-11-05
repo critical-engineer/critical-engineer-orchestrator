@@ -16,6 +16,7 @@ import os
 import sqlite3
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import urlsplit
 
@@ -30,6 +31,22 @@ _MAX_LABEL = 80  # plan name / task ID in the header
 
 class ChannelError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class Inbound:
+    """A message received on a channel. ``sender`` is the channel's own identity."""
+
+    message_id: str
+    sender: str
+    body: str
+
+
+@dataclass(frozen=True)
+class InboundBatch:
+    messages: list[Inbound]
+    cursor: str  # pass back to the next receive() to continue from here
+    gap: bool = False  # the channel skipped messages (too many since the cursor)
 
 
 class Channel(Protocol):
