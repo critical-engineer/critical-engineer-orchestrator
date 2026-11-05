@@ -179,6 +179,20 @@ def test_gate_decided_elsewhere_is_reflected(conn, gate_q):
     assert gate_status(conn, gate_id)["status"] == "approved"
 
 
+def test_question_mirrors_the_gate_record_when_another_handler_won(conn, gate_q):
+    # Another poller (or the skill, as a different identity) denied with a
+    # reason first; this handler's approval loses. The question must record
+    # the winner's decision, reason and identity, not this handler's.
+    gate_id, qid = gate_q
+    from ceo.gates import decide_gate
+
+    other = Engineer(chat=frozenset({ME}), skill=frozenset({"skill:laptop"}))
+    decide_gate(conn, gate_id, "denied", route="skill", identity="skill:laptop", engineer=other,
+                reason="the plan skips F3")
+    assert reply(conn, f"Q{qid} approve") == f"Q{qid}: recorded (denied: the plan skips F3)."
+    assert answer(conn, qid) == ("denied: the plan skips F3", "skill:skill:laptop")
+
+
 # strangers (F4, C10)
 
 

@@ -386,15 +386,13 @@ def test_cli_login_creates_a_missing_settings_directory_privately(api, monkeypat
 
 
 def test_cli_login_checks_the_settings_file_can_be_written_before_logging_in(api, monkeypatch, tmp_path, capsys):
-    readonly = tmp_path / "ro"
-    readonly.mkdir(mode=0o500)
+    # The access check is stubbed rather than using a read-only directory:
+    # root can write anywhere, so a real permission test depends on who runs it.
     monkeypatch.setenv("CEO_MATRIX_HOMESERVER", api.url)
-    monkeypatch.setenv("CEO_ENV_FILE", str(readonly / "env"))
+    monkeypatch.setenv("CEO_ENV_FILE", str(tmp_path / "ceo" / "env"))
+    monkeypatch.setattr(matrix.os, "access", lambda path, mode: False)
     monkeypatch.setattr(matrix.getpass, "getpass", lambda prompt: pytest.fail("asked for the password"))
-    try:
-        assert matrix.main(["login", BOT]) == 1
-    finally:
-        readonly.chmod(0o700)
+    assert matrix.main(["login", BOT]) == 1
     assert "can't write" in capsys.readouterr().err
     assert not [r for r in api.requests if r[0] == "POST"]  # never logged in
 

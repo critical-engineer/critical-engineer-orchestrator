@@ -145,16 +145,26 @@ def handle_message(
             ).fetchone()
             if gate is None or gate["status"] == "open":
                 return f"Q{question_id}: {exc}"
-            # Decided already (e.g. a replayed message): record what stands.
-            decision, reason = gate["status"], None
-        answer = decision if reason is None else f"{decision}: {reason}"
+            # Decided already: by a replayed message, another poller or the skill.
+        # The question mirrors the gate's own record, whoever wrote the decision:
+        # if two handlers race, both copy the same decision, reason and decider,
+        # so the question can never contradict the gate's audit trail.
+        gate = conn.execute(
+            "SELECT status, reason, decided_route, decided_identity FROM gates WHERE id = ?",
+            (question["gate_id"],),
+        ).fetchone()
+        answer = gate["status"] if gate["reason"] is None else f"{gate['status']}: {gate['reason']}"
+        answered_by = f"{gate['decided_route']}:{gate['decided_identity']}"
+        identity = gate["decided_identity"]
+    else:
+        answered_by = f"{ROUTE}:{identity}"
 
     with conn:
         updated = conn.execute(
             "UPDATE questions SET answer = ?, answered_by = ?,"
             " answered_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
             " WHERE id = ? AND answer IS NULL",
-            (answer, f"{ROUTE}:{identity}", question_id),
+            (answer, answered_by, question_id),
         ).rowcount
         if updated:
             append_event(
