@@ -18,15 +18,13 @@ Run on the box (with the channel and engineer settings in the environment):
 """
 
 import json
-import os
 import re
 import sqlite3
 import sys
 import time
-from pathlib import Path
 
 from ceo.gates import Engineer, GateError, decide_gate
-from ceo.ledger import append_event, open_ledger, record_event
+from ceo.ledger import append_event, ledger_path, open_ledger, record_event
 from ceo.notify import Channel, ChannelError, channel_from_env, notify
 
 ROUTE = "chat"
@@ -111,7 +109,33 @@ def handle_message(
     match = _ANSWER.fullmatch(_strip_reply_quote(text))
     if not match:
         return HELP
-    question_id, answer = int(match.group(1)), match.group(2).strip()
+    return answer_question(
+        conn,
+        engineer,
+        route=ROUTE,
+        identity=identity,
+        question_id=int(match.group(1)),
+        answer=match.group(2).strip(),
+    )
+
+
+def answer_question(
+    conn: sqlite3.Connection,
+    engineer: Engineer,
+    *,
+    route: str,
+    identity: str,
+    question_id: int,
+    answer: str,
+) -> str:
+    """Record the engineer's answer to Q<question_id>, from any route. Returns a reply.
+
+    A gate question takes 'approve' or 'deny <reason>' and is decided through
+    the gate code, so route and identity are checked and recorded (C10).
+    """
+    if not engineer.allows(route, identity):
+        record_event(conn, "answer.refused", detail={"route": route, "identity": identity, "question": question_id})
+        return f"{identity!r} can't answer via {route} (C10)"
     question = conn.execute("SELECT * FROM questions WHERE id = ?", (question_id,)).fetchone()
     if question is None:
         return f"Q{question_id}: no such question. {HELP}"
@@ -142,7 +166,7 @@ def handle_message(
                 conn,
                 question["gate_id"],
                 decision,
-                route=ROUTE,
+                route=route,
                 identity=identity,
                 engineer=engineer,
                 reason=reason,
@@ -165,7 +189,7 @@ def handle_message(
         answered_by = f"{gate['decided_route']}:{gate['decided_identity']}"
         identity = gate["decided_identity"]
     else:
-        answered_by = f"{ROUTE}:{identity}"
+        answered_by = f"{route}:{identity}"
 
     with conn:
         updated = conn.execute(
@@ -180,7 +204,7 @@ def handle_message(
                 "question.answered",
                 plan_id=question["plan_id"],
                 task_id=question["task_id"],
-                detail={"question": question_id, "identity": identity, "answer": answer},
+                detail={"question": question_id, "route": route, "identity": identity, "answer": answer},
             )
     return f"Q{question_id}: recorded ({answer})."
 
@@ -218,12 +242,6 @@ def poll_once(
     return len(batch.messages)
 
 
-def _ledger_path() -> Path:
-    path = Path(os.environ.get("CEO_LEDGER", "~/.local/share/ceo/ledger.db")).expanduser()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def main(argv: list[str]) -> int:
     if argv not in (["poll"], ["check"]):
         print("usage: python -m ceo.questions poll|check", file=sys.stderr)
@@ -231,7 +249,7 @@ def main(argv: list[str]) -> int:
     try:
         channel = channel_from_env()
         engineer = Engineer.from_env()
-        conn = open_ledger(_ledger_path())
+        conn = open_ledger(ledger_path())
         if argv == ["poll"]:
             print(f"handled {poll_once(conn, channel, engineer)} message(s)")
             return 0

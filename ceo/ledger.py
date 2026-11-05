@@ -7,6 +7,7 @@ ID is never reused. ``events`` is an append-only audit log.
 """
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -211,6 +212,14 @@ def _initialise(conn: sqlite3.Connection) -> None:
         except sqlite3.Error:
             pass  # keep the original error; open_ledger() closes the connection
         raise
+
+
+def ledger_path(env: dict[str, str] | None = None) -> Path:
+    """Where the ledger lives: CEO_LEDGER, default ~/.local/share/ceo/ledger.db."""
+    env = os.environ if env is None else env
+    path = Path(env.get("CEO_LEDGER", "~/.local/share/ceo/ledger.db")).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def open_ledger(path: str | Path, *, timeout: float = 30.0) -> sqlite3.Connection:

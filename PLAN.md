@@ -233,7 +233,7 @@ depends_on: [T4, T7, T14]
 blast_radius: medium
 check: python -m pytest tests/test_skill.py
 ```
-The desk interface (D13): a skill (Claude Code first) plus the operations behind it: scaffold a plan, status, open questions, answer, approve, take over a blocked task. Starts with a short spike to choose the transport (OQ12). Decisions made through it are recorded in the ledger like chat answers (C8).
+The desk interface (D13): a skill (Claude Code first) plus the operations behind it: scaffold a plan, status, open questions, answer, approve, take over a blocked task. Transport chosen by the spike: CLI over SSH with a pinned key (OQ12). Decisions made through it go through the same code as chat answers, with route `skill` (C8, C10). Takeover of a blocked task arrives with T10; the Critic with T8.
 
 ### T14: Judgment gates in the ledger
 ```yaml
@@ -293,5 +293,5 @@ Remaining CEO improvements are run through CEO itself. Then the first external p
 - OQ9. ~~Where status lives~~ Resolved with D10: the ledger holds execution status (C7); checkboxes are ticked only by the orchestrator at archive, so the archived change records what was done.
 - OQ10. Research tasks (like T0) have checks that prove a file exists, not that its findings are right. Should they always require human sign-off regardless of blast_radius?
 - OQ11. Matrix end-to-end encryption, after the POC: a vodozemac-backed Python library or an encrypting proxy (pantalaimon)? libolm is deprecated (July 2024) and python-olm wheels reportedly stop at CPython 3.12. Deferred by D11; needs a dependency decision (C2) and a backed-up key store.
-- OQ12. Transport for the CEO skill (D13), keeping D6's boundary (no new inbound ports): a CLI run over the engineer's existing SSH access, with a restricted key and forced command (simplest), an MCP server (typed tools; where does it run, and how does it reach the box's ledger?), or A2A (if agents, not only the human, will talk to CEO). Whichever transport is chosen must authenticate the caller as the engineer (C10). Decide with a short spike at the start of T13.
+- OQ12. ~~Transport for the CEO skill~~ Resolved by the T13 spike (docs/spikes/T13-skill-transport.md): a CLI over the engineer's existing SSH, with a dedicated key pinned in `authorized_keys` to a forced command (`ceo.cli skill-shell <identity>`, `restrict`). Identity comes from the key, commands are allowlisted and split without a shell, read commands print JSON. An MCP server can later wrap the same commands over stdio with no change on the box; A2A is for agents, not the desk.
 - OQ13. Subscription terms: before any change to D12, re-check the provider's current terms for automated and third-party use of consumer subscriptions (Anthropic's changed several times in 2026).
