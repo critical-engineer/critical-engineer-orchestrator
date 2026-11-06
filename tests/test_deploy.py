@@ -28,12 +28,18 @@ def test_service_runs_as_ceo_without_access_to_home():
     assert "ExecStart=/opt/ceo/.venv/bin/python -m ceo.run loop" in unit
 
 
-def test_firewall_blocks_the_signal_api_and_the_home_network_for_the_worker():
+def test_firewall_denies_the_worker_loopback_by_default_and_the_home_network():
     nft = (DEPLOY / "ceo-worker.nft").read_text()
-    blocking = [line for line in rules(DEPLOY / "ceo-worker.nft") if "reject" in line]
-    assert blocking and all('meta skuid "ceo-worker"' in line for line in blocking)
-    local_ports = re.search(r"127\.0\.0\.0/8 tcp dport \{([^}]*)\}", nft).group(1)
-    assert {"9922", "8096", "22"} <= {p.strip() for p in local_ports.split(",")}
+    active = rules(DEPLOY / "ceo-worker.nft")
+    worker_rules = [line for line in active if "accept" in line.split() or "reject" in line.split()]
+    worker_rules = [line for line in worker_rules if not line.startswith("type ")]
+    assert worker_rules and all('meta skuid "ceo-worker"' in line for line in worker_rules)
+    loopback = [line for line in worker_rules if 'oifname "lo"' in line]
+    # Only DNS and the ephemeral range are allowed, then everything else on lo is rejected.
+    assert loopback[-1].endswith('oifname "lo" counter reject')
+    allowed = " ".join(line for line in loopback if line.endswith("accept"))
+    assert "th dport 53 accept" in allowed and "th dport 32768-60999 accept" in allowed
+    assert "9922" not in allowed and "8096" not in allowed
     for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"):
         assert cidr in nft
     assert "policy accept" in nft  # only the worker's traffic is filtered
@@ -47,7 +53,12 @@ def test_setup_script_checks_before_installing_and_verifies_after():
     assert 'id -u)" -eq 0' in script  # refuses to run without root
     assert "set -euo pipefail" in script
     for check in ("worker can't read CEO's settings", "worker has no sudo", "worker can't reach the Signal API",
-                  "worker can't reach the home network", "worker can't read any home directory"):
+                  "worker can't reach the home network", "worker can't read any home directory",
+                  "no worker process survives CEO's cleanup", "can run commands as the worker"):
         assert check in script
+    # Negative network checks demand curl's "couldn't connect" (7), not just any failure.
+    assert 'expect_exit 7 "worker can\'t reach the Signal API' in script
+    assert '|| got=$?' in script  # failures are reported, not fatal under set -e
+    assert 'can\'t read $SEED_ENV' in script
     assert "chown -R root:root /opt/ceo" in script  # neither user can change CEO's code
     assert "chmod 0640 /etc/ceo/env" in script
