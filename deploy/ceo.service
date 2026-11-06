@@ -1,0 +1,21 @@
+[Unit]
+Description=Critical Engineer Orchestrator
+After=network-online.target ceo-firewall.service
+Wants=network-online.target
+Requires=ceo-firewall.service
+
+[Service]
+User=ceo
+Group=ceo
+EnvironmentFile=/etc/ceo/env
+WorkingDirectory=/var/lib/ceo
+ExecStart=/opt/ceo/.venv/bin/python -m ceo.run loop
+Restart=on-failure
+RestartSec=30
+# Neither CEO nor the workers it starts (via sudo) can see /home or /root.
+ProtectHome=yes
+PrivateTmp=yes
+UMask=0007
+
+[Install]
+WantedBy=multi-user.target
