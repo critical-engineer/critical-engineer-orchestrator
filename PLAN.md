@@ -201,7 +201,7 @@ depends_on: [T4]
 blast_radius: high
 check: python -m pytest tests/test_approval.py
 ```
-Polls `main`; approved plan = PLAN.md at main HEAD; records approved_sha; halts on mismatch (F3). Tests use a local bare repo. Bot identity: a separate GitHub account or a GitHub App, with a token scoped to the plan repo.
+Polls `main` in CEO's own clone; the plan is `openspec/changes/<change>`, fingerprinted by git's tree hash. Approval = the engineer merging it (C10): CEO finds the single merged PR whose merge commit is on `main` and carries the current plan contents, and asks GitHub who merged it; if that's one of the engineer's GitHub logins, the `plan_approval` gate (T14) is decided as them by route `github` and `approved_sha` is recorded. Anything else (another merger, the bot, a direct push, an ambiguous history) leaves the gate open for chat or the skill. A change to the plan on `main` after approval withdraws it and halts (F3). Tests use local git repos and a fake GitHub API. GitHub access is read-only (a token is only needed for a private repo); the bot identity for writing PRs comes with C8's plan-change PRs.
 
 ### T6: Chat notifications (outbound)
 ```yaml
