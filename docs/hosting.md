@@ -15,6 +15,9 @@ sudo bash critical-engineer-orchestrator/scripts/setup-box.sh \
 `--seed-env` copies the chat settings (`CEO_CHANNEL`, `CEO_MATRIX_*`) into `/etc/ceo/env` the
 first time. Read the script first: it creates users, a sudoers rule and firewall rules.
 
+For anything beyond trying it out, install a commit you've reviewed rather than a moving branch:
+`--ref <commit sha>`.
+
 ## What you get
 
 | | |
@@ -25,7 +28,7 @@ first time. Read the script first: it creates users, a sudoers rule and firewall
 | `/opt/ceo` | CEO's code, owned by root: neither user can change it. |
 | `/etc/ceo/env` | Settings (root:ceo 0640), including the Matrix token. |
 | sudoers | `ceo` may run commands as `ceo-worker`; nothing else. |
-| firewall | `ceo-firewall.service` loads the `inet ceo_worker` table: the worker can't reach the home network or local services (Signal API, Jellyfin, SSH, CUPS, port 8000). Its internet access and its own loopback traffic stay open. |
+| firewall | `ceo-firewall.service` loads the `inet ceo_worker` table. For the worker, loopback is **denied by default** (no local service is reachable, whatever its port) except DNS and the kernel's ephemeral port range, where tests start their own servers; the home network is blocked; the internet stays open (the model API). |
 
 ## After setup
 
@@ -38,7 +41,9 @@ first time. Read the script first: it creates users, a sudoers rule and firewall
 4. **The skill**: point its `authorized_keys` line (docs/skill.md) at `/opt/ceo/.venv/bin/python`
    and `--env-file /etc/ceo/env`, in `~ceo/.ssh/authorized_keys`.
 
-## Known gap
+## Known gaps
 
-`/media/admin/Data_Vault` is world-readable, so the worker can read it (C5 says it shouldn't).
-The script reports this rather than changing it, since it could affect Jellyfin.
+- `/media/admin/Data_Vault` is world-readable, so the worker can read it (C5 says it shouldn't).
+  The script reports this rather than changing it, since it could affect Jellyfin.
+- A local service listening on a port in the ephemeral range (32768-60999) would be reachable
+  by the worker. Fixed services on the box listen below it.
