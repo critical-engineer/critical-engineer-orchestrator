@@ -29,7 +29,8 @@ def run(conn, cost, started="2026-11-10T10:00:00.000Z"):
 
 def alerts(conn):
     return [r[0] for r in conn.execute(
-        "SELECT json_extract(detail, '$.threshold') FROM events WHERE kind = 'budget.alert' ORDER BY id")]
+        "SELECT json_extract(detail, '$.threshold') FROM events WHERE kind = 'budget.alert'"
+        " AND json_extract(detail, '$.delivered') = 1 ORDER BY id")]
 
 
 def test_month_spend_counts_this_month_only(conn):
@@ -85,5 +86,35 @@ def test_zero_cap_allows_nothing():
 def test_cap_from_env():
     assert cap_from_env({}) == 20.0
     assert cap_from_env({"CEO_BUDGET_USD": "5.5"}) == 5.5
-    with pytest.raises(ValueError):
-        cap_from_env({"CEO_BUDGET_USD": "-1"})
+    for bad in ("-1", "inf", "Infinity", "nan", "-inf"):
+        with pytest.raises(ValueError, match="finite"):
+            cap_from_env({"CEO_BUDGET_USD": bad})
+
+
+def test_month_is_taken_in_utc():
+    # 23:30 on 31 October in New York is already November in UTC.
+    from datetime import timedelta
+    new_york = timezone(timedelta(hours=-4))
+    late_october_local = datetime(2026, 10, 31, 23, 30, tzinfo=new_york)
+    from ceo.budget import check_budget as cb
+    import sqlite3
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE runs (started_at TEXT, cost_usd REAL)")
+    conn.execute("CREATE TABLE events (kind TEXT, plan_id, task_id, detail TEXT)")
+    assert cb(conn, 20.0, now=late_october_local).month == "2026-11"
+
+
+def test_a_failed_alert_is_retried_and_not_duplicated_once_sent(conn):
+    run(conn, 17.0)
+    calls = []
+
+    def flaky(text):
+        calls.append(text)
+        if len(calls) == 1:
+            raise RuntimeError("chat is down")
+
+    check_budget(conn, 20.0, alert=flaky, now=NOV)   # fails: not marked sent
+    assert alerts(conn) == []
+    check_budget(conn, 20.0, alert=flaky, now=NOV)   # retried and delivered
+    check_budget(conn, 20.0, alert=flaky, now=NOV)   # not sent again
+    assert len(calls) == 2 and alerts(conn) == [0.8]
