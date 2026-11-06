@@ -77,16 +77,54 @@ def test_prompt_carries_task_check_and_contract():
 
 
 def test_sandbox_runs_as_the_worker_user_without_prompting():
-    calls = []
+    assert Sandbox(user="ceo-worker").command(["opencode", "run", "x"]) == [
+        "sudo", "-n", "-H", "-u", "ceo-worker", "--", "opencode", "run", "x",
+    ]
+    assert Sandbox(user=None).command(["opencode"]) == ["opencode"]
 
-    class Recording(Sandbox):
-        def run(self, argv, *, cwd, timeout, env=None):
-            command = ["sudo", "-n", "-u", self.user, "--", *argv] if self.user else argv
-            calls.append(command)
-            return subprocess.CompletedProcess(command, 0, "", "")
 
-    Recording(user="ceo-worker").run(["opencode", "run"], cwd=Path("."), timeout=1)
-    assert calls[0][:5] == ["sudo", "-n", "-u", "ceo-worker", "--"]
+def test_sandbox_run_returns_output_and_exit_code(tmp_path):
+    result = Sandbox(user=None).run(["sh", "-c", "echo out; echo err >&2; exit 3"], cwd=tmp_path, timeout=10)
+    assert (result.returncode, result.stdout, result.stderr) == (3, "out\n", "err\n")
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # A zombie still answers kill(0); treat it as gone.
+    status = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+    return bool(status) and not status.startswith("Z")
+
+
+def test_timeout_kills_the_whole_process_tree(tmp_path):
+    pidfile = tmp_path / "child.pid"
+    script = f"sleep 60 & echo $! > {pidfile}; sleep 60"
+    result = Sandbox(user=None).run(["sh", "-c", script], cwd=tmp_path, timeout=0.5)
+    assert result.returncode == 124
+    child = int(pidfile.read_text())
+    import time
+    for _ in range(50):
+        if not _alive(child):
+            break
+        time.sleep(0.1)
+    assert not _alive(child)
+
+
+def test_background_children_are_cleaned_up_after_a_normal_exit(tmp_path):
+    pidfile = tmp_path / "child.pid"
+    # The child doesn't hold the output pipe, so the command exits normally.
+    script = f"sleep 60 >/dev/null 2>&1 & echo $! > {pidfile}"
+    result = Sandbox(user=None).run(["sh", "-c", script], cwd=tmp_path, timeout=10)
+    assert result.returncode == 0
+    child = int(pidfile.read_text())
+    import time
+    for _ in range(50):
+        if not _alive(child):
+            break
+        time.sleep(0.1)
+    assert not _alive(child)
 
 
 def test_sandbox_timeout_is_a_result_not_an_exception(tmp_path):

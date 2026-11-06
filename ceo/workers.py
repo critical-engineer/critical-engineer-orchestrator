@@ -14,6 +14,7 @@ assumption becomes a judgment gate (F12).
 import json
 import os
 import re
+import signal
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -26,29 +27,66 @@ _LIST_MARKER = re.compile(r"^\s*(?:(?:[-*]|\d+[.)])\s+)+")
 
 @dataclass(frozen=True)
 class Sandbox:
-    """Runs commands as the worker user. ``user=None`` runs them directly (tests, dev)."""
+    """Runs commands as the worker user. ``user=None`` runs them directly (tests, dev).
+
+    A command runs in its own session. When it finishes or times out, nothing it
+    started is left running: as the worker user, every process of that user is
+    killed (tasks run one at a time, so the worker user runs nothing else);
+    without a worker user, the command's process group is killed.
+    """
 
     user: str | None = "ceo-worker"
 
+    def command(self, argv: list[str]) -> list[str]:
+        if not self.user:
+            return list(argv)
+        # -n: never prompt; the sudoers rule allows exactly this (D5).
+        # -H: the worker's own HOME, so opencode uses the worker's config.
+        return ["sudo", "-n", "-H", "-u", self.user, "--", *argv]
+
     def run(self, argv: list[str], *, cwd: Path, timeout: float, env: dict | None = None) -> subprocess.CompletedProcess:
-        command = list(argv)
-        if self.user:
-            # -n: never prompt; the sudoers rule allows exactly this (D5).
-            command = ["sudo", "-n", "-u", self.user, "--", *command]
+        command = self.command(argv)
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+            start_new_session=True,
+        )
         try:
-            return subprocess.run(
-                command,
-                cwd=cwd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
-                stdin=subprocess.DEVNULL,
+            stdout, stderr = process.communicate(timeout=timeout)
+            code = process.returncode
+        except subprocess.TimeoutExpired:
+            self._kill_group(process.pid, signal.SIGTERM)  # sudo relays TERM to the command
+            try:
+                stdout, stderr = process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._kill_group(process.pid, signal.SIGKILL)
+                stdout, stderr = process.communicate()
+            code, stderr = 124, (stderr or "") + f"\ntimed out after {timeout}s"
+        finally:
+            self._clean_up(process.pid)
+        return subprocess.CompletedProcess(command, code, stdout or "", stderr or "")
+
+    @staticmethod
+    def _kill_group(pgid: int, sig: int) -> None:
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    def _clean_up(self, pgid: int) -> None:
+        """Leave nothing running that this command started."""
+        if self.user:
+            subprocess.run(
+                ["sudo", "-n", "-u", self.user, "--", "pkill", "-KILL", "-u", self.user],
+                stdin=subprocess.DEVNULL, capture_output=True, timeout=30,
             )
-        except subprocess.TimeoutExpired as exc:
-            return subprocess.CompletedProcess(
-                command, 124, _text(exc.stdout), _text(exc.stderr) + f"\ntimed out after {timeout}s"
-            )
+        else:
+            self._kill_group(pgid, signal.SIGKILL)
 
 
 def _text(value) -> str:
