@@ -64,18 +64,29 @@ class Orchestrator:
     budget_usd: float
     channel: Channel | None = None
     log: list[str] = field(default_factory=list)
+    failed: bool = False  # did anything in the last cycle fail?
 
     def cycle(self) -> list[str]:
-        self.log = []
+        self.log, self.failed = [], False
         self._recover_interrupted()
         self._read_answers()
         for change in self.plans:
             try:
                 self._plan_cycle(change)
             except Exception as exc:  # one plan's failure mustn't stop the others
-                record_event(self.conn, "cycle.error", detail={"plan": change, "error": repr(exc)[:2000]})
+                self._error("cycle.error", {"plan": change}, exc)
                 self.log.append(f"{change}: error {exc!r}")
         return self.log
+
+    def _error(self, kind: str, detail: dict, exc: BaseException) -> None:
+        """Record a failure with its traceback, print it, and remember it for the exit code."""
+        self.failed = True
+        trace = traceback.format_exc()
+        print(trace, file=sys.stderr, flush=True)
+        try:
+            record_event(self.conn, kind, detail={**detail, "error": repr(exc)[:2000], "traceback": trace[-4000:]})
+        except sqlite3.Error:
+            pass  # the ledger itself is failing; the printed traceback is all we have
 
     def _recover_interrupted(self) -> None:
         rows = self.conn.execute("SELECT plan_id, id FROM tasks WHERE status = 'running'").fetchall()
@@ -97,6 +108,9 @@ class Orchestrator:
         except ChannelError as exc:
             record_event(self.conn, "cycle.chat_error", detail={"error": str(exc)})
             self.log.append(f"chat error: {exc}")
+        except Exception as exc:  # e.g. a malformed answer: record it and still run the plans
+            self._error("cycle.chat_error", {}, exc)
+            self.log.append(f"chat error: {exc!r}")
 
     def _plan_id(self, change: str) -> int:
         with self.conn:
@@ -181,16 +195,19 @@ class Orchestrator:
         ).fetchone()
         if done:
             return
-        record_event(self.conn, "plan.completed", plan_id=plan["id"], detail={"sha": plan["approved_sha"]})
-        self.log.append(f"{plan['change']}: all {len(statuses)} tasks completed")
+        # Tell the engineer first; record completion only once they've been told,
+        # so a failed send is retried on the next cycle.
         if self.channel is not None:
             try:
                 notify(self.conn, self.channel, "done",
                        f"All {len(statuses)} tasks of {plan['change']} are completed. "
-                       f"Branches: ceo/{plan['change']}/<task>.",
+                       f"Integration branch: ceo/{plan['change']}/integration.",
                        plan_id=plan["id"], plan=plan["change"])
             except ChannelError:
-                pass
+                self.log.append(f"{plan['change']}: all {len(statuses)} tasks completed (announcement failed; will retry)")
+                return
+        record_event(self.conn, "plan.completed", plan_id=plan["id"], detail={"sha": plan["approved_sha"]})
+        self.log.append(f"{plan['change']}: all {len(statuses)} tasks completed")
 
     def _ask_once(self, gate_id: int, summary: str) -> None:
         asked = self.conn.execute("SELECT 1 FROM questions WHERE gate_id = ?", (gate_id,)).fetchone()
@@ -252,7 +269,7 @@ def main(argv: list[str]) -> int:
     if argv == ["once"]:
         for line in orchestrator.cycle():
             print(line)
-        return 0
+        return 1 if orchestrator.failed else 0
     stop = False
 
     def request_stop(signum, frame):
