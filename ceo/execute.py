@@ -3,7 +3,10 @@
 One attempt:
 1. Record the run; the task goes ``running``.
 2. Export the approved commit for the worker (no ``.git``, see workspace.py).
-3. The worker does the task; CEO commits the result on ``ceo/<change>/<task>``.
+3. The worker does the task, starting from the plan's integration branch
+   ``ceo/<change>/integration`` (the approved commit plus every task completed so far), so
+   a task sees the work of the tasks it depends on. CEO commits the result on
+   ``ceo/<change>/<task>``.
 4. The task's ``check`` runs **as the worker user**, in a fresh export of that
    commit: it executes code the worker wrote, so it must never run as ``ceo``.
 5. Decide:
@@ -30,9 +33,15 @@ from ceo.ledger import append_event, record_event
 from ceo.notify import Channel, ChannelError, notify
 from ceo.questions import ask_gate
 from ceo.workers import Sandbox, build_prompt
-from ceo.workspace import commit_result, export
+from ceo.workspace import branch_tip, commit_result, export, fast_forward, is_ancestor, set_branch
 
 _OUTPUT_LIMIT = 20_000  # characters of check output kept as evidence
+
+
+def integration_branch(change: str) -> str:
+    """Where completed tasks accumulate. A sibling of the task branches
+    ``ceo/<change>/<task>`` (git can't have both ``ceo/x`` and ``ceo/x/1.1``)."""
+    return f"ceo/{change}/integration"
 
 
 @dataclass(frozen=True)
@@ -59,9 +68,10 @@ class Executor:
 
     def run_task(self, plan: sqlite3.Row, task: TaskSpec) -> str:
         """Run one attempt of ``task``. Returns the outcome."""
-        conn, change, base = self.conn, plan["change"], plan["approved_sha"]
-        if not base:
+        conn, change = self.conn, plan["change"]
+        if not plan["approved_sha"]:
             raise ValueError(f"plan {change} isn't approved")
+        base = self._integration_base(plan)
         model = self._model_for(plan["id"], task.id)
         worker = dataclasses.replace(self.worker, model=model) if model != self.worker.model else self.worker
         with conn:
@@ -128,6 +138,30 @@ class Executor:
             return self._passed(plan, task, sha, output)
         return self._failed(plan, task, f"check failed (exit {check_exit}): {output[-300:]}")
 
+    def _integration_base(self, plan: sqlite3.Row) -> str:
+        """The tip of the integration branch, started (or restarted) at the approved commit.
+
+        If the plan was re-approved at a commit the branch doesn't build on,
+        the branch starts again from the new approved commit.
+        """
+        branch, approved = integration_branch(plan["change"]), plan["approved_sha"]
+        tip = branch_tip(self.repo, branch)
+        if tip is None or not is_ancestor(self.repo, approved, tip):
+            if tip is not None:
+                record_event(self.conn, "integration.reset", plan_id=plan["id"],
+                             detail={"branch": branch, "old_tip": tip, "approved_sha": approved})
+            set_branch(self.repo, branch, approved)
+            return approved
+        return tip
+
+    def _integrate(self, plan: sqlite3.Row, task: TaskSpec, sha: str) -> bool:
+        """Add a finished task's commit to the integration branch (fast-forward only)."""
+        if fast_forward(self.repo, integration_branch(plan["change"]), sha):
+            return True
+        record_event(self.conn, "task.integration_stale", plan_id=plan["id"], task_id=task.id,
+                     detail={"commit": sha})
+        return False
+
     def _check(self, change: str, task: TaskSpec, attempt: int, sha: str) -> tuple[int, str]:
         checkdir = self.work_root / change / f"{task.id}-{attempt}-check"
         shutil.rmtree(checkdir, ignore_errors=True)
@@ -153,6 +187,9 @@ class Executor:
                 f"Review branch ceo/{plan['change']}/{task.id} ({sha[:12]}) against the plan's "
                 "constraints and failure modes.",
             )
+        if not self._integrate(plan, task, sha):
+            self._set_status(plan["id"], task.id, "pending")
+            return "retry"  # other work landed first; redo it on top so its check covers both
         self._set_status(plan["id"], task.id, "completed")
         record_event(self.conn, "task.completed", plan_id=plan["id"], task_id=task.id, detail={"commit": sha})
         self._notify("done", f"Task {task.id} passed its check ({sha[:12]}).", plan, task.id)
@@ -224,6 +261,9 @@ class Executor:
         approved = gate["status"] == "approved"
         if gate["kind"] == "high_radius":
             if approved:
+                if not self._integrate(plan, task, payload["commit"]):
+                    self._set_status(plan["id"], task.id, "pending")
+                    return "retry"
                 self._set_status(plan["id"], task.id, "completed")
                 record_event(self.conn, "task.completed", plan_id=plan["id"], task_id=task.id,
                              detail={"commit": payload.get("commit"), "gate": gate["id"]})
