@@ -212,3 +212,65 @@ def test_next_ready_follows_dependencies_not_label_order(world):
     assert orch._next_ready(plan_id, deps) == "1.1"
     conn.execute("UPDATE tasks SET status = 'blocked' WHERE plan_id = ? AND id = '1.1'", (plan_id,))
     assert orch._next_ready(plan_id, deps) is None     # 2.1 needs 1.1 completed
+
+
+# review round (CodeRabbit on #16)
+
+
+def test_one_failing_plan_does_not_stop_the_others(world, capsys):
+    orch = world["orch"]
+    orch.plans = ["does-not-exist", "greet"]
+    import ceo.run
+
+    real = ceo.run.check_plan
+
+    def broken_for_one(conn, plan_id, repo, github, engineer):
+        change = conn.execute("SELECT change FROM plans WHERE id = ?", (plan_id,)).fetchone()[0]
+        if change == "does-not-exist":
+            raise RuntimeError("boom")
+        return real(conn, plan_id, repo, github, engineer)
+
+    ceo.run.check_plan = broken_for_one
+    try:
+        log = orch.cycle()
+    finally:
+        ceo.run.check_plan = real
+    assert any(line.startswith("does-not-exist: error") for line in log)
+    assert "greet: task 1.1 -> completed" in log
+    assert orch.failed
+    detail = world["conn"].execute("SELECT detail FROM events WHERE kind = 'cycle.error'").fetchone()[0]
+    assert "Traceback" in detail and "boom" in detail
+    assert "Traceback" in capsys.readouterr().err
+
+
+def test_a_chat_failure_does_not_stop_the_plans(world):
+    class BrokenChat(Chat):
+        def receive(self, cursor, *, wait=30):
+            raise ValueError("malformed batch")
+
+    world["orch"].channel = BrokenChat()
+    log = world["orch"].cycle()
+    assert any(line.startswith("chat error") for line in log)
+    assert "greet: task 1.1 -> completed" in log
+
+
+def test_a_failed_completion_announcement_is_retried(world):
+    from ceo.notify import ChannelError
+
+    orch, conn = world["orch"], world["conn"]
+    orch.cycle()
+    orch.cycle()
+
+    class DownChat(Chat):
+        def send(self, message):
+            if "are completed" in message:
+                raise ChannelError("chat is down")
+            super().send(message)
+
+    down = DownChat()
+    orch.channel = orch.executor.channel = down
+    assert any("announcement failed" in line for line in orch.cycle())
+    assert conn.execute("SELECT count(*) FROM events WHERE kind = 'plan.completed'").fetchone()[0] == 0
+    orch.channel = orch.executor.channel = world["chat"]
+    assert "greet: all 2 tasks completed" in orch.cycle()
+    assert conn.execute("SELECT count(*) FROM events WHERE kind = 'plan.completed'").fetchone()[0] == 1
