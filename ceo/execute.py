@@ -89,43 +89,47 @@ class Executor:
             append_event(conn, "task.started", plan_id=plan["id"], task_id=task.id,
                          detail={"run": run_id, "attempt": attempt, "model": model})
 
-        workdir = self.work_root / change / f"{task.id}-{attempt}"
-        shutil.rmtree(workdir, ignore_errors=True)
-        workdir.parent.mkdir(parents=True, exist_ok=True)
-        export(self.repo, base, workdir)
-        prompt = build_prompt(
-            task_id=task.id,
-            description=task.description,
-            check=task.check,
-            change_dir=f"openspec/changes/{change}",
-            feedback=self._feedback(plan["id"], task.id),
-        )
-        result = worker.run(prompt, workdir)
-
-        sha = None
-        if result.ok:
-            sha = commit_result(
-                self.repo, base, workdir,
-                branch=f"ceo/{change}/{task.id}",
-                message=f"{change} {task.id}: {task.description[:60]}",
+        result, sha, check_exit, output, unchanged = None, None, None, "", False
+        try:
+            workdir = self.work_root / change / f"{task.id}-{attempt}"
+            shutil.rmtree(workdir, ignore_errors=True)
+            workdir.parent.mkdir(parents=True, exist_ok=True)
+            export(self.repo, base, workdir)
+            prompt = build_prompt(
+                task_id=task.id,
+                description=task.description,
+                check=task.check,
+                change_dir=f"openspec/changes/{change}",
+                feedback=self._feedback(plan["id"], task.id),
             )
-        # No changes can be right (the work is already there, e.g. after a
-        # crash or done by an earlier task): the check on the starting point
-        # decides. A worker that does nothing still can't pass a check the
-        # code doesn't satisfy.
-        unchanged = result.ok and sha is None
-        if unchanged:
-            sha = base
-        check_exit, output = None, ""
-        if sha:
-            check_exit, output = self._check(change, task, attempt, sha)
+            result = worker.run(prompt, workdir)
+            # The cost is known now; record it before anything else can fail,
+            # so the budget always counts it.
+            with conn:
+                conn.execute("UPDATE runs SET cost_usd = ? WHERE id = ?", (result.cost_usd, run_id))
+            if result.ok:
+                sha = commit_result(
+                    self.repo, base, workdir,
+                    branch=f"ceo/{change}/{task.id}",
+                    message=f"{change} {task.id}: {task.description[:60]}",
+                )
+            # No changes can be right (the work is already there, e.g. after a
+            # crash or done by an earlier task): the check on the starting point
+            # decides. A worker that does nothing still can't pass a check the
+            # code doesn't satisfy.
+            unchanged = result.ok and sha is None
+            if unchanged:
+                sha = base
+            if sha:
+                check_exit, output = self._check(change, task, attempt, sha)
+        except Exception as exc:
+            # Any failure inside the attempt ends the attempt, so it counts
+            # towards the attempt limit and escalation instead of leaving the
+            # task 'running'.
+            self._finish_run(run_id, sha, check_exit, output)
+            return self._failed(plan, task, f"the attempt raised {exc!r}"[:500])
 
-        with conn:
-            conn.execute(
-                "UPDATE runs SET finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), commit_sha = ?,"
-                " check_exit = ?, check_output = ?, cost_usd = ? WHERE id = ?",
-                (sha, check_exit, output, result.cost_usd, run_id),
-            )
+        self._finish_run(run_id, sha, check_exit, output)
 
         if not result.ok:
             return self._failed(plan, task, f"worker failed: {'; '.join(result.errors)[:500]}")
@@ -144,6 +148,14 @@ class Executor:
         if check_exit == 0:
             return self._passed(plan, task, sha, output)
         return self._failed(plan, task, f"check failed (exit {check_exit}): {output[-300:]}")
+
+    def _finish_run(self, run_id: int, sha: str | None, check_exit: int | None, output: str) -> None:
+        with self.conn:
+            self.conn.execute(
+                "UPDATE runs SET finished_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), commit_sha = ?,"
+                " check_exit = ?, check_output = ? WHERE id = ?",
+                (sha, check_exit, output, run_id),
+            )
 
     def _integration_base(self, plan: sqlite3.Row) -> str:
         """The tip of the integration branch, started (or restarted) at the approved commit.
