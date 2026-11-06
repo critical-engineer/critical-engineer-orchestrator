@@ -86,11 +86,14 @@ def conn(tmp_path):
     c.close()
 
 
-def github_says(api, merge_commit, merger="driessamyn", number=7):
+def pr(number, merge_commit, base="main"):
+    return {"number": number, "merged_at": "2026-11-05T10:00:00Z", "merge_commit_sha": merge_commit,
+            "base": {"ref": base}}
+
+
+def github_says(api, merge_commit, merger="driessamyn", number=7, base="main"):
     api.routes = {
-        ("GET", f"/repos/{REPO}/commits/"): (
-            200, [{"number": number, "merged_at": "2026-11-05T10:00:00Z", "merge_commit_sha": merge_commit}],
-        ),
+        ("GET", f"/repos/{REPO}/commits/"): (200, [pr(number, merge_commit, base)]),
         ("GET", f"/repos/{REPO}/pulls/{number}"): (200, {"number": number, "merged_by": {"login": merger}}),
     }
 
@@ -188,10 +191,7 @@ def test_pr_with_different_plan_contents_is_ignored(conn, repos, github, api):
 def test_ambiguous_prs_are_not_trusted(conn, repos, github, api):
     _, merge = repos.merge_pr("plan-v1", PLAN_V1)
     api.routes = {
-        ("GET", f"/repos/{REPO}/commits/"): (200, [
-            {"number": 7, "merged_at": "t", "merge_commit_sha": merge},
-            {"number": 8, "merged_at": "t", "merge_commit_sha": merge},
-        ]),
+        ("GET", f"/repos/{REPO}/commits/"): (200, [pr(7, merge), pr(8, merge)]),
         ("GET", f"/repos/{REPO}/pulls/"): (200, {"merged_by": {"login": "driessamyn"}}),
     }
     assert check(conn, repos, github).status == "pending"
@@ -260,3 +260,78 @@ def test_malformed_merger_login_is_not_trusted(conn, repos, github, api, login):
     github_says(api, merge)
     api.routes[("GET", f"/repos/{REPO}/pulls/7")] = (200, {"merged_by": {"login": login}})
     assert check(conn, repos, github).status == "pending"
+
+
+
+# review round 2 (CodeRabbit on #11)
+
+
+def test_pr_must_target_main(conn, repos, github, api):
+    # The engineer merged a PR into a side branch; someone else merged that
+    # side branch into main. The PR's merge commit is on main, but it wasn't
+    # a merge *into* main.
+    _, merge = repos.merge_pr("plan-v1", PLAN_V1)
+    github_says(api, merge, base="release-experiments")
+    assert check(conn, repos, github).status == "pending"
+
+
+@pytest.mark.parametrize("base", [None, 42, {"name": "main"}])
+def test_pr_with_malformed_base_is_not_trusted(conn, repos, github, api, base):
+    _, merge = repos.merge_pr("plan-v1", PLAN_V1)
+    github_says(api, merge)
+    entry = {"number": 7, "merged_at": "t", "merge_commit_sha": merge, "base": base}
+    api.routes[("GET", f"/repos/{REPO}/commits/")] = (200, [entry])
+    assert check(conn, repos, github).status == "pending"
+
+
+def test_all_pages_are_read(github, api):
+    # Page 1 is full, so page 2 must be read too.
+    calls = []
+    real_get = github._get
+
+    def fake_get(path):
+        calls.append(path)
+        page = int(path.rsplit("page=", 1)[1])
+        if page == 1:
+            return [pr(n, "a" * 40) for n in range(100)]
+        return [pr(999, "b" * 40)]
+
+    github._get = fake_get
+    pulls = github.merged_pulls("c" * 40)
+    assert len(pulls) == 101 and pulls[-1]["number"] == 999
+    assert [c.rsplit("page=", 1)[1] for c in calls] == ["1", "2"]
+    github._get = real_get
+
+
+def test_ambiguity_on_a_later_page_is_seen(conn, repos, github, api, monkeypatch):
+    _, merge = repos.merge_pr("plan-v1", PLAN_V1)
+    github_says(api, merge)
+    pages = {1: [pr(7, merge)] + [pr(n, "0" * 40) for n in range(1000, 1099)], 2: [pr(8, merge)]}
+    monkeypatch.setattr(github, "_get", lambda path: (
+        pages[int(path.rsplit("page=", 1)[1])] if "/commits/" in path else {"merged_by": {"login": "driessamyn"}}
+    ))
+    assert check(conn, repos, github).status == "pending"  # PR 8 on page 2 makes it ambiguous
+
+
+def test_too_many_pages_is_an_error(github, monkeypatch):
+    monkeypatch.setattr(github, "_get", lambda path: [pr(n, "a" * 40) for n in range(100)])
+    with pytest.raises(ApprovalError, match="more than"):
+        github.merged_pulls("c" * 40)
+
+
+def test_deleting_an_approved_plan_withdraws_it_and_restoring_needs_a_fresh_decision(conn, repos, github, api):
+    _, merge = repos.merge_pr("plan-v1", PLAN_V1)
+    github_says(api, merge)
+    assert check(conn, repos, github).status == "approved"
+    git(repos.work, "rm", "-q", "-r", f"openspec/changes/{CHANGE}")
+    git(repos.work, "commit", "-q", "-m", "remove plan")
+    git(repos.work, "push", "-q", "origin", "main")
+    assert check(conn, repos, github).status == "not_on_main"
+    assert approved_sha(conn) is None and "plan.changed_after_approval" in kinds(conn)
+    check(conn, repos, github)  # a second check doesn't add another tombstone
+    assert conn.execute("SELECT count(*) FROM gates").fetchone()[0] == 2
+    repos.commit(PLAN_V1, "restore plan v1 directly")  # same contents as the approved v1
+    api.routes[("GET", f"/repos/{REPO}/commits/")] = (200, [])
+    assert check(conn, repos, github).status == "pending"
+    statuses = [r[0] for r in conn.execute("SELECT status FROM gates ORDER BY id")]
+    assert statuses == ["approved", "open", "open"]  # v1, tombstone, restored v1 (fresh)

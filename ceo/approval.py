@@ -105,16 +105,32 @@ class GitHub:
         except ValueError as exc:
             raise ApprovalError(f"GitHub GET {path}: response is not JSON") from exc
 
-    def merged_pulls(self, commit: str) -> list[dict]:
-        """Merged PRs that contain ``commit``: [{number, merge_commit_sha}]."""
-        pulls = self._get(f"/repos/{self.repo}/commits/{commit}/pulls")
-        if not isinstance(pulls, list):
-            raise ApprovalError("GitHub: unexpected response listing pull requests")
-        return [
-            {"number": p["number"], "merge_commit_sha": p.get("merge_commit_sha")}
-            for p in pulls
-            if isinstance(p, dict) and p.get("merged_at") and isinstance(p.get("number"), int)
-        ]
+    def merged_pulls(self, commit: str, *, per_page: int = 100, max_pages: int = 10) -> list[dict]:
+        """Merged PRs that contain ``commit``: [{number, merge_commit_sha, base}].
+
+        Reads every page: the caller needs the complete list to tell one
+        matching PR from an ambiguous history.
+        """
+        result = []
+        for page in range(1, max_pages + 1):
+            pulls = self._get(f"/repos/{self.repo}/commits/{commit}/pulls?per_page={per_page}&page={page}")
+            if not isinstance(pulls, list):
+                raise ApprovalError("GitHub: unexpected response listing pull requests")
+            for p in pulls:
+                if not (isinstance(p, dict) and p.get("merged_at") and isinstance(p.get("number"), int)):
+                    continue
+                base = p.get("base")
+                ref = base.get("ref") if isinstance(base, dict) else None
+                result.append(
+                    {
+                        "number": p["number"],
+                        "merge_commit_sha": p.get("merge_commit_sha"),
+                        "base": ref if isinstance(ref, str) else None,
+                    }
+                )
+            if len(pulls) < per_page:
+                return result
+        raise ApprovalError(f"GitHub: more than {per_page * max_pages} pull requests for one commit")
 
     def merged_by(self, number: int) -> str | None:
         pr = self._get(f"/repos/{self.repo}/pulls/{number}")
@@ -137,7 +153,8 @@ def _merger_of_current_plan(repo: PlanRepo, github: GitHub, head: str, change: s
     candidates = [
         p
         for p in github.merged_pulls(changed_in)
-        if isinstance(p["merge_commit_sha"], str)
+        if p["base"] == repo.branch  # merged *into* main, not into a side branch
+        and isinstance(p["merge_commit_sha"], str)
         and _SHA.fullmatch(p["merge_commit_sha"])
         and repo.is_ancestor(p["merge_commit_sha"], head)
         and repo.tree(p["merge_commit_sha"], change) == tree
@@ -146,6 +163,32 @@ def _merger_of_current_plan(repo: PlanRepo, github: GitHub, head: str, change: s
         return None, f"{len(candidates)} merged PRs match the plan on main"
     login = github.merged_by(candidates[0]["number"])
     return login, f"PR #{candidates[0]['number']}"
+
+
+def _withdraw_for_deletion(conn: sqlite3.Connection, plan: sqlite3.Row, head: str) -> None:
+    """The plan left main: withdraw any approval, and make sure a restored plan
+    can't reuse it. The latest plan gate gets a tombstone after it, a gate for
+    "no plan" (``tree: None``), which no real plan's contents can match."""
+    if plan["approved_sha"]:
+        with conn:
+            conn.execute("UPDATE plans SET approved_sha = NULL WHERE id = ?", (plan["id"],))
+        record_event(
+            conn,
+            "plan.changed_after_approval",
+            plan_id=plan["id"],
+            detail={"approved_sha": plan["approved_sha"], "head": head, "deleted": True},
+        )
+    latest = conn.execute(
+        "SELECT payload FROM gates WHERE plan_id = ? AND kind = 'plan_approval' ORDER BY id DESC LIMIT 1",
+        (plan["id"],),
+    ).fetchone()
+    if latest is not None and json.loads(latest["payload"]).get("tree") is not None:
+        open_gate(
+            conn,
+            plan["id"],
+            "plan_approval",
+            {"repo": plan["repo"], "change": plan["change"], "tree": None},
+        )
 
 
 def check_plan(
@@ -167,6 +210,7 @@ def check_plan(
     head = repo.head()
     tree = repo.tree(head, change)
     if tree is None:
+        _withdraw_for_deletion(conn, plan, head)
         return Approval("not_on_main")
 
     if plan["approved_sha"]:
