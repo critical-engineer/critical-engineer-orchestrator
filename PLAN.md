@@ -251,7 +251,7 @@ depends_on: [T4, T5]
 blast_radius: high
 check: python -m pytest tests/test_dispatch.py && sudo -u ceo-worker test ! -r /home/dries
 ```
-`ceo` / `ceo-worker` users, sudoers rule, nftables rules (D5). Calls `opencode run` as ceo-worker in a per-task git worktree; CLI permission allowlist; captures output and cost. Worker contract: the final output lists any assumption the plan didn't sanction; each one is a judgment gate (F12).
+`ceo` / `ceo-worker` users, sudoers rule, nftables rules (D5). Calls `opencode run --pure --format json` as ceo-worker in a per-task **export** of the approved commit (files only, no `.git`, so the worker can never point CEO at hooks that run as `ceo`); CEO copies the result back into its own worktree (skipping `.git`, keeping symlinks as links, dropping special files) and commits it with hooks disabled, one commit per task on `ceo/<change>/<task>` (D8). Captures final text, tools used and cost. Worker contract: the final output lists any assumption the plan didn't sanction; each one is a judgment gate (F12).
 
 ### T10: Orchestrator-run checks and evidence
 ```yaml
@@ -284,9 +284,9 @@ Remaining CEO improvements are run through CEO itself. Then the first external p
 
 - OQ1. ~~Bot chat identity~~ Resolved 2026-11-01 by D11: the bot has its own Matrix account (no phone number needed).
 - OQ2. Branch protection / rulesets on a **private** repo: available on the free GitHub plan? (The framework repo is public, so this is fine; the media-box plan repo may be private.)
-- OQ3. Headless permission behaviour of `opencode run` and `claude -p` for actions not on the allowlist: refuse, hang, or allow? Verify before T9.
+- OQ3. ~~Headless permission behaviour~~ Answered 2026-11-06 on the box (opencode 1.19.5): `opencode run` without `--dangerously-skip-permissions` still edits files in `--dir`. CEO doesn't rely on in-app permissions anyway: the worker is contained by its OS user and network rules (G4). Still to confirm: shell-command behaviour headless.
 - OQ4. ~~Signal receive mode~~ Superseded by D11; for Matrix, T7 long-polls `/sync`.
-- OQ5. Per-run cost: can OpenCode report cost per run, or do we query OpenRouter's usage data?
+- OQ5. ~~Per-run cost~~ Answered 2026-11-06: `opencode run --format json` emits `step_finish` events with `cost` (USD) and token counts; a run's cost is their sum. OpenCode's free models report 0.
 - OQ6. Workers that need Docker (media-box phase): rootless Docker for `ceo-worker`, or a VM? Can gluetun run rootless?
 - OQ7. Name: "CEO" clashes with Paperclip's CEO agent; is that irony intended?
 - OQ8. ~~Does OpenSpec's JSON output expose task-level detail?~~ Answered by T0: yes (`instructions apply --json`), but task IDs are positional (R4). Still open: is `docs/agent-contract.md` a stable interface for programs?
