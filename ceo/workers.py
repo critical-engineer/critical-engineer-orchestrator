@@ -156,11 +156,17 @@ def parse_assumptions(text: str) -> tuple[bool, list[str]]:
     return True, items
 
 
-def build_prompt(*, task_id: str, description: str, check: str, change_dir: str) -> str:
+def build_prompt(
+    *, task_id: str, description: str, check: str, change_dir: str, feedback: list[str] = ()
+) -> str:
+    earlier = ""
+    if feedback:
+        lines = "\n".join(f"- {item}" for item in feedback)
+        earlier = f"\nEarlier attempts at this task were not accepted. Take this into account:\n{lines}\n"
     return f"""You are a worker in the Critical Engineer Orchestrator. Do exactly one task from an approved plan.
 
 Task {task_id}: {description}
-
+{earlier}
 The plan is in {change_dir}/ (proposal.md, design.md, specs/, tasks.md). Read what you need.
 Respect its constraints (C<n>) and decisions (D<n>); don't change the plan itself.
 

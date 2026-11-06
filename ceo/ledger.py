@@ -11,7 +11,7 @@ import os
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 TASK_STATUSES = ("pending", "running", "completed", "blocked")
 
@@ -155,6 +155,11 @@ _MIGRATIONS = {
             value      TEXT NOT NULL,
             updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
         )""",
+    ],
+    5: [
+        # Checks and evidence (T10, D12): which model ran each attempt, so a
+        # task's path, retries and escalations can be rebuilt from the ledger.
+        "ALTER TABLE runs ADD COLUMN model TEXT",
     ],
 }
 
