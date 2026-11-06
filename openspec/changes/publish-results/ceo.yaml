@@ -1,0 +1,30 @@
+# CEO execution metadata for publish-results. One entry per task in tasks.md.
+# Checks run as the worker, in a clean export of the task's commit, with CEO's
+# venv (pytest, pyyaml) first on PATH.
+tasks:
+  "1.1":
+    depends_on: []
+    # The engineer signs off what "done" means before anything is built.
+    blast_radius: high
+    check: >-
+      test -f tests/test_publish.py && test ! -e ceo/publish.py &&
+      python -c "import ast,sys; t=ast.parse(open('tests/test_publish.py').read());
+      n=sum(isinstance(f,ast.FunctionDef) and f.name.startswith('test_') for f in ast.walk(t));
+      sys.exit(0 if n>=12 else 1)"
+  "2.1":
+    depends_on: ["1.1"]
+    # Handles a token: the engineer reviews the implementation too.
+    blast_radius: high
+    check: "python -m pytest tests/test_publish.py -q"
+  "3.1":
+    depends_on: ["2.1"]
+    # Changes the loop.
+    blast_radius: high
+    check: "python -m pytest tests/test_run.py tests/test_publish.py -q"
+  "4.1":
+    depends_on: ["2.1"]
+    blast_radius: low
+    check: >-
+      grep -q CEO_PUBLISHER docs/hosting.md && grep -q CEO_GITHUB_PUSH_TOKEN docs/hosting.md &&
+      grep -q CEO_PUBLISHER scripts/setup-box.sh && grep -q CEO_GITHUB_PUSH_TOKEN scripts/setup-box.sh &&
+      python -m pytest tests/test_deploy.py -q
