@@ -312,3 +312,99 @@ def test_loopback_requests_bypass_an_environment_proxy(api, channel, monkeypatch
         assert len(sends(api)) == 1
     finally:
         proxy.close()
+
+
+# password login and the settings file
+
+
+def test_password_login_sends_credentials_and_returns_the_session(api):
+    api.routes[("POST", f"{API}/login")] = (200, {"access_token": "syt_new", "device_id": "D1", "user_id": BOT})
+    session = matrix.password_login(api.url, BOT, "hunter2")
+    assert session["access_token"] == "syt_new"
+    [(_, path, headers, body)] = [r for r in api.requests if r[0] == "POST"]
+    assert path == f"{API}/login" and "Authorization" not in headers
+    assert body["identifier"] == {"type": "m.id.user", "user": BOT}
+    assert body["password"] == "hunter2" and "refresh_token" not in body
+
+
+def test_password_login_errors(api):
+    api.routes[("POST", f"{API}/login")] = (403, {"errcode": "M_FORBIDDEN"})
+    with pytest.raises(ChannelError, match="HTTP 403 M_FORBIDDEN"):
+        matrix.password_login(api.url, BOT, "wrong")
+    with pytest.raises(ChannelError, match="https"):
+        matrix.password_login("http://matrix.example", BOT, "x")
+    with pytest.raises(ChannelError, match="Matrix ID"):
+        matrix.password_login(api.url, "ceo-bot", "x")
+
+
+def test_write_env_value_replaces_keeps_others_and_stays_private(tmp_path):
+    import os
+    import stat
+
+    env = tmp_path / "env"
+    env.write_text("# comment\nCEO_MATRIX_ACCESS_TOKEN=old\nCEO_MATRIX_HUMAN=@me:x\n")
+    env.chmod(0o644)
+    matrix.write_env_value(env, "CEO_MATRIX_ACCESS_TOKEN", "syt_new")
+    assert env.read_text() == "# comment\nCEO_MATRIX_ACCESS_TOKEN=syt_new\nCEO_MATRIX_HUMAN=@me:x\n"
+    assert stat.S_IMODE(os.stat(env).st_mode) == 0o600
+    matrix.write_env_value(env, "CEO_NEW", "1")
+    assert env.read_text().endswith("CEO_NEW=1\n")
+    assert [p.name for p in tmp_path.iterdir()] == ["env"]  # no temp files left
+
+
+def test_write_env_value_rejects_line_breaks(tmp_path):
+    with pytest.raises(ChannelError, match="line break"):
+        matrix.write_env_value(tmp_path / "env", "K", "a\nCEO_EVIL=1")
+
+
+def test_cli_login_writes_the_token_without_printing_it(api, monkeypatch, tmp_path, capsys):
+    api.routes[("POST", f"{API}/login")] = (200, {"access_token": "syt_secret_new", "device_id": "D1", "user_id": BOT})
+    env = tmp_path / "env"
+    env.write_text("CEO_MATRIX_ACCESS_TOKEN=old\n")
+    monkeypatch.setenv("CEO_MATRIX_HOMESERVER", api.url)
+    monkeypatch.setenv("CEO_ENV_FILE", str(env))
+    monkeypatch.setattr(matrix.getpass, "getpass", lambda prompt: "hunter2")
+    assert matrix.main(["login", BOT]) == 0
+    out = capsys.readouterr().out
+    assert "syt_secret_new" not in out and "hunter2" not in out
+    assert "token expiry: none (long-lived)" in out
+    assert env.read_text() == "CEO_MATRIX_ACCESS_TOKEN=syt_secret_new\n"
+
+
+def test_cli_login_creates_a_missing_settings_directory_privately(api, monkeypatch, tmp_path):
+    import os
+    import stat
+
+    api.routes[("POST", f"{API}/login")] = (200, {"access_token": "syt_new", "device_id": "D1"})
+    env = tmp_path / "fresh" / "ceo" / "env"
+    monkeypatch.setenv("CEO_MATRIX_HOMESERVER", api.url)
+    monkeypatch.setenv("CEO_ENV_FILE", str(env))
+    monkeypatch.setattr(matrix.getpass, "getpass", lambda prompt: "hunter2")
+    assert matrix.main(["login", BOT]) == 0
+    assert env.read_text() == "CEO_MATRIX_ACCESS_TOKEN=syt_new\n"
+    assert stat.S_IMODE(os.stat(env.parent).st_mode) == 0o700
+
+
+def test_cli_login_checks_the_settings_file_can_be_written_before_logging_in(api, monkeypatch, tmp_path, capsys):
+    # The access check is stubbed rather than using a read-only directory:
+    # root can write anywhere, so a real permission test depends on who runs it.
+    monkeypatch.setenv("CEO_MATRIX_HOMESERVER", api.url)
+    monkeypatch.setenv("CEO_ENV_FILE", str(tmp_path / "ceo" / "env"))
+    monkeypatch.setattr(matrix.os, "access", lambda path, mode: False)
+    monkeypatch.setattr(matrix.getpass, "getpass", lambda prompt: pytest.fail("asked for the password"))
+    assert matrix.main(["login", BOT]) == 1
+    assert "can't write" in capsys.readouterr().err
+    assert not [r for r in api.requests if r[0] == "POST"]  # never logged in
+
+
+def test_cli_login_prints_nothing_from_the_server_response(api, monkeypatch, tmp_path, capsys):
+    api.routes[("POST", f"{API}/login")] = (
+        200, {"access_token": "syt_x", "device_id": "DEVICE_FROM_SERVER", "user_id": "@spoofed:x", "expires_in_ms": 300000},
+    )
+    monkeypatch.setenv("CEO_MATRIX_HOMESERVER", api.url)
+    monkeypatch.setenv("CEO_ENV_FILE", str(tmp_path / "env"))
+    monkeypatch.setattr(matrix.getpass, "getpass", lambda prompt: "hunter2")
+    assert matrix.main(["login", BOT]) == 0
+    out = capsys.readouterr().out
+    assert "DEVICE_FROM_SERVER" not in out and "@spoofed" not in out and "300000" not in out
+    assert f"logged in as {BOT}" in out and "it expires and will need refreshing" in out

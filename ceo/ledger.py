@@ -10,7 +10,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 TASK_STATUSES = ("pending", "running", "completed", "blocked")
 
@@ -138,6 +138,22 @@ _MIGRATIONS = {
            BEGIN SELECT RAISE(ABORT, 'a gate is decided once'); END""",
         """CREATE TRIGGER gates_no_delete BEFORE DELETE ON gates
            BEGIN SELECT RAISE(ABORT, 'gates are never deleted'); END""",
+    ],
+    4: [
+        # Chat answers (T7). A question can stand for a gate, so "Q12 approve"
+        # decides that gate; an answer is given once and questions are kept.
+        "ALTER TABLE questions ADD COLUMN gate_id INTEGER REFERENCES gates (id)",
+        """CREATE TRIGGER questions_answered_once BEFORE UPDATE ON questions
+           WHEN OLD.answer IS NOT NULL
+           BEGIN SELECT RAISE(ABORT, 'a question is answered once'); END""",
+        """CREATE TRIGGER questions_no_delete BEFORE DELETE ON questions
+           BEGIN SELECT RAISE(ABORT, 'questions are never deleted'); END""",
+        # Where each channel's inbound stream was last read up to.
+        """CREATE TABLE cursors (
+            channel    TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+        )""",
     ],
 }
 
