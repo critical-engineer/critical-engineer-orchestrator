@@ -68,7 +68,8 @@ else
   git -C /opt/ceo checkout -q --detach "$REF"
 fi
 [ -d /opt/ceo/.venv ] || python3 -m venv /opt/ceo/.venv
-/opt/ceo/.venv/bin/pip install -q --upgrade /opt/ceo
+# The dev extras (pytest) too: checks run with this venv first on PATH.
+/opt/ceo/.venv/bin/pip install -q --upgrade "/opt/ceo[dev]"
 chown -R root:root /opt/ceo
 chmod -R go-w /opt/ceo
 
@@ -163,6 +164,7 @@ if [ -z "$gateway" ]; then
 else
   expect_exit 7 "worker can't reach the home network ($gateway)" as_worker curl -s -m 3 -o /dev/null "http://$gateway/"
 fi
+expect_exit 0 "checks can run pytest as the worker" as_worker env PATH=/opt/ceo/.venv/bin:/usr/bin:/bin python -m pytest --version
 if systemctl is-active --quiet ceo.service; then ok "ceo.service is running"; else bad "ceo.service isn't running"; fi
 
 if runuser -u ceo-worker -- test -r /media/admin/Data_Vault 2>/dev/null; then
