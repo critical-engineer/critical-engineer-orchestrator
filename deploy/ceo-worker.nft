@@ -1,0 +1,24 @@
+#!/usr/sbin/nft -f
+# CEO worker containment (D5, C5): what the ceo-worker user may not reach.
+# Loaded by ceo-firewall.service as its own table, so no other firewall
+# configuration is touched. Internet access stays open (the model API).
+
+table inet ceo_worker
+delete table inet ceo_worker
+
+table inet ceo_worker {
+    chain output {
+        type filter hook output priority filter; policy accept;
+
+        # Local services on this box that the worker has no business with.
+        # Its own loopback traffic stays open: opencode talks to its own
+        # local server on a random port.
+        meta skuid "ceo-worker" ip daddr 127.0.0.0/8 tcp dport { 22, 631, 8000, 8096, 9922 } counter reject
+        meta skuid "ceo-worker" ip6 daddr ::1 tcp dport { 22, 631, 8000, 8096, 9922 } counter reject
+
+        # The home network and other private ranges. DNS still works: the
+        # worker asks systemd-resolved on 127.0.0.53, which forwards as itself.
+        meta skuid "ceo-worker" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } counter reject
+        meta skuid "ceo-worker" ip6 daddr { fc00::/7, fe80::/10 } counter reject
+    }
+}
