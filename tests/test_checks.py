@@ -331,3 +331,35 @@ def test_no_changes_but_the_check_passes_completes_without_a_commit(setup):
     ex.worker = FakeWorker(files={})
     assert ex.run_task(plan(setup), TASK) == "completed"
     assert git(setup["repo"], "rev-parse", "ceo/demo/integration") == tip  # nothing new
+
+
+# failures inside an attempt (CodeRabbit review on #15)
+
+
+@dataclass
+class RaisingWorker(FakeWorker):
+    def run(self, prompt, workdir):
+        raise RuntimeError("worker crashed")
+
+
+def test_an_exception_in_the_attempt_is_a_failed_attempt(setup):
+    ex = executor(setup, RaisingWorker(), max_attempts=1)
+    assert ex.run_task(plan(setup), TASK) == "gate:escalation"
+    assert task_row(setup)["status"] == "blocked"  # not left 'running'
+    run = setup["conn"].execute("SELECT finished_at FROM runs").fetchone()
+    assert run["finished_at"] is not None
+
+
+def test_cost_is_recorded_even_if_a_later_step_fails(setup, monkeypatch):
+    import ceo.execute
+
+    def broken_commit(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ceo.execute, "commit_result", broken_commit)
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}, cost=0.37), max_attempts=2)
+    assert ex.run_task(plan(setup), TASK) == "retry"
+    assert setup["conn"].execute("SELECT cost_usd FROM runs").fetchone()[0] == 0.37
+    reason = setup["conn"].execute(
+        "SELECT json_extract(detail, '$.reason') FROM events WHERE kind = 'task.attempt_failed'").fetchone()[0]
+    assert "disk full" in reason
