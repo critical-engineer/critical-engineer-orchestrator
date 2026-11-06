@@ -264,3 +264,57 @@ def test_approving_an_assumption_does_not_pass_a_failed_check(setup):
     decide_gate(setup["conn"], gates(setup)[0]["id"], "approved", route="chat", identity=ME, engineer=ENGINEER)
     assert ex.resolve_gates(plan(setup), {"1.1": TASK}) == ["1.1:unsanctioned_assumption:approved:retry"]
     assert task_row(setup)["status"] == "pending"
+
+
+# the integration branch: tasks build on each other's work
+
+
+def add_task(setup, task_id):
+    setup["conn"].execute("INSERT INTO tasks (plan_id, id) VALUES (1, ?)", (task_id,))
+    setup["conn"].commit()
+
+
+def test_a_later_task_starts_from_the_work_of_earlier_ones(setup):
+    add_task(setup, "1.2")
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
+    assert ex.run_task(plan(setup), TASK) == "completed"
+    second = TaskSpec("1.2", "Add bye", "grep -q hello hello.txt && grep -q bye bye.txt", "low")
+    ex.worker = FakeWorker(files={"bye.txt": "bye\n"})  # doesn't rewrite hello.txt
+    assert ex.run_task(plan(setup), second) == "completed"
+    tip = git(setup["repo"], "rev-parse", "ceo/demo/integration")
+    assert git(setup["repo"], "show", f"{tip}:hello.txt") == "hello"
+    assert git(setup["repo"], "show", f"{tip}:bye.txt") == "bye"
+    assert git(setup["repo"], "rev-list", "--count", f"{plan(setup)['approved_sha']}..{tip}") == "2"
+
+
+def test_a_result_built_on_older_work_is_redone_not_merged(setup):
+    # 1.1 waits for sign-off while 1.2 completes; 1.1's commit no longer
+    # fast-forwards, so it's redone on top instead of merged unchecked.
+    add_task(setup, "1.2")
+    high = TaskSpec("1.1", "Write hello", "grep -q hello hello.txt", "high")
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
+    assert ex.run_task(plan(setup), high) == "gate:high_radius"
+    ex.worker = FakeWorker(files={"bye.txt": "bye\n"})
+    assert ex.run_task(plan(setup), TaskSpec("1.2", "Add bye", "grep -q bye bye.txt", "low")) == "completed"
+    decide_gate(setup["conn"], gates(setup)[0]["id"], "approved", route="chat", identity=ME, engineer=ENGINEER)
+    assert ex.resolve_gates(plan(setup), {"1.1": high}) == ["1.1:high_radius:approved:retry"]
+    assert task_row(setup)["status"] == "pending"
+    kinds = [r[0] for r in setup["conn"].execute("SELECT kind FROM events")]
+    assert "task.integration_stale" in kinds
+
+
+def test_re_approval_restarts_the_integration_branch(setup):
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
+    ex.run_task(plan(setup), TASK)
+    # The plan is re-approved at a new commit that isn't built on the old work.
+    (setup["repo"] / "openspec" / "changes" / "demo" / "tasks.md").write_text("- [ ] 1.1 Write hello v2\n")
+    git(setup["repo"], "checkout", "-q", "main")
+    git(setup["repo"], "commit", "-qam", "plan v2")
+    new = git(setup["repo"], "rev-parse", "HEAD")
+    setup["conn"].execute("UPDATE plans SET approved_sha = ?", (new,))
+    setup["conn"].execute("UPDATE tasks SET status = 'pending'")
+    setup["conn"].commit()
+    ex.run_task(plan(setup), TASK)
+    tip = git(setup["repo"], "rev-parse", "ceo/demo/integration")
+    assert git(setup["repo"], "rev-parse", f"{tip}^") == new
+    assert "integration.reset" in [r[0] for r in setup["conn"].execute("SELECT kind FROM events")]

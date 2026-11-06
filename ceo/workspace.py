@@ -107,3 +107,37 @@ def commit_result(repo: Path, base: str, worker_dir: Path, *, branch: str, messa
             return sha
         finally:
             _git(repo, "worktree", "remove", "--force", str(tree))
+
+
+def branch_tip(repo: Path, branch: str) -> str | None:
+    result = subprocess.run(
+        ["git", *_GIT_SAFE, "-C", str(repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
+        capture_output=True, timeout=60,
+    )
+    return result.stdout.decode().strip() if result.returncode == 0 else None
+
+
+def is_ancestor(repo: Path, ancestor: str, commit: str) -> bool:
+    result = subprocess.run(
+        ["git", *_GIT_SAFE, "-C", str(repo), "merge-base", "--is-ancestor", ancestor, commit],
+        capture_output=True, timeout=60,
+    )
+    return result.returncode == 0
+
+
+def set_branch(repo: Path, branch: str, commit: str) -> None:
+    _git(repo, "branch", "--force", branch, commit)
+
+
+def fast_forward(repo: Path, branch: str, commit: str) -> bool:
+    """Move ``branch`` to ``commit`` only if that's a fast-forward. Returns whether it moved.
+
+    Integration never merges or cherry-picks: a commit that isn't a descendant of
+    the branch tip was built on older work, and its check didn't run against
+    what the branch holds now.
+    """
+    current = branch_tip(repo, branch)
+    if current is not None and not is_ancestor(repo, current, commit):
+        return False
+    set_branch(repo, branch, commit)
+    return True
