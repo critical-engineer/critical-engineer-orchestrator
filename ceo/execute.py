@@ -109,6 +109,13 @@ class Executor:
                 branch=f"ceo/{change}/{task.id}",
                 message=f"{change} {task.id}: {task.description[:60]}",
             )
+        # No changes can be right (the work is already there, e.g. after a
+        # crash or done by an earlier task): the check on the starting point
+        # decides. A worker that does nothing still can't pass a check the
+        # code doesn't satisfy.
+        unchanged = result.ok and sha is None
+        if unchanged:
+            sha = base
         check_exit, output = None, ""
         if sha:
             check_exit, output = self._check(change, task, attempt, sha)
@@ -124,8 +131,8 @@ class Executor:
             return self._failed(plan, task, f"worker failed: {'; '.join(result.errors)[:500]}")
         if not result.reported_assumptions:
             return self._failed(plan, task, "the worker didn't end with an ASSUMPTIONS: section")
-        if sha is None:
-            return self._failed(plan, task, "the worker changed nothing")
+        if unchanged and check_exit != 0:
+            return self._failed(plan, task, f"the worker changed nothing and the check fails (exit {check_exit})")
         if result.assumptions:
             return self._gate(
                 plan, task, "unsanctioned_assumption",
