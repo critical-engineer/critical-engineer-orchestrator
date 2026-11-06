@@ -209,3 +209,31 @@ def test_answer_text_may_contain_dashes(env):
     conn = ledger(env)
     assert conn.execute("SELECT reason FROM gates").fetchone()[0] == "--force push would lose history"
     conn.close()
+
+
+# review round 2 (CodeRabbit on #10)
+
+
+def test_questions_identify_repo_and_plan(env):
+    ask(env, "Which port?")
+    [item] = json.loads(shell(env, "questions")[1])
+    assert (item["plan_id"], item["repo"], item["plan"]) == (1, "r", "media-box")
+
+
+def test_answer_event_mirrors_the_gate_deciders_route_and_identity(env):
+    # Chat decided the gate first; the skill's later answer is recorded as
+    # what the gate says, route and identity both.
+    from ceo.gates import Engineer, decide_gate
+
+    qid, gate_id = ask(env, "Merge?", ACTION)
+    conn = ledger(env)
+    decide_gate(conn, gate_id, "denied", route="chat", identity="@me:x",
+                engineer=Engineer(chat=frozenset({"@me:x"})), reason="too risky")
+    conn.close()
+    assert shell(env, f"answer {qid} approve")[0] == 0
+    conn = ledger(env)
+    detail = json.loads(conn.execute(
+        "SELECT detail FROM events WHERE kind = 'question.answered'").fetchone()[0])
+    answered_by = conn.execute("SELECT answered_by FROM questions").fetchone()[0]
+    conn.close()
+    assert (detail["route"], detail["identity"], answered_by) == ("chat", "@me:x", "chat:@me:x")

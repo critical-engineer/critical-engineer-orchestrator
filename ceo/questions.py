@@ -187,7 +187,7 @@ def answer_question(
         ).fetchone()
         answer = gate["status"] if gate["reason"] is None else f"{gate['status']}: {gate['reason']}"
         answered_by = f"{gate['decided_route']}:{gate['decided_identity']}"
-        identity = gate["decided_identity"]
+        route, identity = gate["decided_route"], gate["decided_identity"]
     else:
         answered_by = f"{route}:{identity}"
 

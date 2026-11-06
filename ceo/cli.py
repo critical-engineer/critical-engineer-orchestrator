@@ -59,7 +59,7 @@ def status(conn: sqlite3.Connection) -> dict:
 
 def open_questions(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
-        "SELECT q.id, q.plan_id, p.change, q.task_id, q.text, q.asked_at,"
+        "SELECT q.id, q.plan_id, p.repo, p.change, q.task_id, q.text, q.asked_at,"
         " g.id AS gate_id, g.kind AS gate_kind, g.payload AS gate_payload,"
         " g.payload_sha256 AS gate_sha256"
         " FROM questions q JOIN plans p ON p.id = q.plan_id"
@@ -70,6 +70,8 @@ def open_questions(conn: sqlite3.Connection) -> list[dict]:
     for r in rows:
         item = {
             "question": r["id"],
+            "plan_id": r["plan_id"],
+            "repo": r["repo"],
             "plan": r["change"],
             "task": r["task_id"],
             "text": r["text"],
