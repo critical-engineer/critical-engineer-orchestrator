@@ -16,6 +16,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,8 +38,13 @@ class Sandbox:
     """
 
     user: str | None = "ceo-worker"
+    # Put first on PATH for every command: sudo resets PATH, and checks need
+    # tools such as pytest (from CEO's own venv on the box).
+    path: str | None = None
 
     def command(self, argv: list[str]) -> list[str]:
+        if self.path:
+            argv = ["env", f"PATH={self.path}:/usr/local/bin:/usr/bin:/bin", *argv]
         if not self.user:
             return list(argv)
         # -n: never prompt; the sudoers rule allows exactly this (D5).
@@ -269,8 +275,12 @@ class OpencodeWorker:
 def worker_from_env(env: dict[str, str] | None = None) -> OpencodeWorker:
     env = os.environ if env is None else env
     user = env.get("CEO_WORKER_USER", "ceo-worker")
+    # By default the worker (and every check) sees CEO's own venv first, which
+    # on the box has pytest; under `python -m` the task's exported code still
+    # shadows the installed copy, because the current directory comes first.
+    path = env.get("CEO_WORKER_PATH", os.path.dirname(sys.executable))
     return OpencodeWorker(
-        sandbox=Sandbox(user=user or None),
+        sandbox=Sandbox(user=user or None, path=path or None),
         model=env.get("CEO_WORKER_MODEL", DEFAULT_MODEL),
         binary=env.get("CEO_OPENCODE_BIN", "opencode"),
         timeout=float(env.get("CEO_WORKER_TIMEOUT", "1800")),

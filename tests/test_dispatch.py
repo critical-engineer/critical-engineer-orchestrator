@@ -83,6 +83,22 @@ def test_sandbox_runs_as_the_worker_user_without_prompting():
     assert Sandbox(user=None).command(["opencode"]) == ["opencode"]
 
 
+def test_sandbox_puts_the_tool_path_first_inside_sudo():
+    command = Sandbox(user="ceo-worker", path="/opt/ceo/.venv/bin").command(["python", "-m", "pytest"])
+    assert command[:6] == ["sudo", "-n", "-H", "-u", "ceo-worker", "--"]
+    assert command[6:8] == ["env", "PATH=/opt/ceo/.venv/bin:/usr/local/bin:/usr/bin:/bin"]
+    assert command[8:] == ["python", "-m", "pytest"]
+
+
+def test_checks_find_tools_on_the_configured_path(tmp_path):
+    tool = tmp_path / "bin"
+    tool.mkdir()
+    (tool / "mytool").write_text("#!/bin/sh\necho found\n")
+    (tool / "mytool").chmod(0o755)
+    result = Sandbox(user=None, path=str(tool)).run(["sh", "-c", "mytool"], cwd=tmp_path, timeout=10)
+    assert result.stdout == "found\n"
+
+
 def test_sandbox_run_returns_output_and_exit_code(tmp_path):
     result = Sandbox(user=None).run(["sh", "-c", "echo out; echo err >&2; exit 3"], cwd=tmp_path, timeout=10)
     assert (result.returncode, result.stdout, result.stderr) == (3, "out\n", "err\n")
@@ -159,8 +175,10 @@ def test_worker_failure_is_reported(tmp_path):
 
 
 def test_worker_from_env():
-    worker = worker_from_env({"CEO_WORKER_MODEL": "openrouter/x", "CEO_WORKER_USER": "w", "CEO_WORKER_TIMEOUT": "60"})
+    worker = worker_from_env({"CEO_WORKER_MODEL": "openrouter/x", "CEO_WORKER_USER": "w", "CEO_WORKER_TIMEOUT": "60",
+                              "CEO_WORKER_PATH": "/opt/ceo/.venv/bin"})
     assert (worker.model, worker.sandbox.user, worker.timeout) == ("openrouter/x", "w", 60.0)
+    assert worker.sandbox.path == "/opt/ceo/.venv/bin"
     assert worker_from_env({"CEO_WORKER_USER": ""}).sandbox.user is None
 
 
