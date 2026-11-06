@@ -36,6 +36,9 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(id -u)" -eq 0 ] || { echo "run as root: sudo bash $0 ..." >&2; exit 1; }
+if [ -n "$SEED_ENV" ] && [ ! -r "$SEED_ENV" ]; then
+  echo "--seed-env: can't read $SEED_ENV" >&2; exit 1
+fi
 say() { printf '\n==> %s\n' "$*"; }
 
 say "users and groups"
@@ -122,19 +125,45 @@ systemctl restart ceo.service
 
 say "checking the sandbox from the worker's side"
 fail=0
-check() { if "$@"; then echo "  ok   $desc"; else echo "  FAIL $desc"; fail=1; fi; }
+ok()   { echo "  ok   $*"; }
+bad()  { echo "  FAIL $*"; fail=1; }
+# Run as the worker and return the command's own exit status (126/127 if the
+# account switch itself fails, which every check below treats as a failure).
 as_worker() { runuser -u ceo-worker -- "$@"; }
+# A negative check only means something if the same mechanism works positively,
+# so every "can't" below has a control that must succeed first.
+expect_exit() {  # expect_exit <code> <description> <command...>
+  local want=$1 desc=$2; shift 2
+  local got=0
+  "$@" >/dev/null 2>&1 || got=$?   # `|| got=$?` keeps `set -e` from aborting the script
+  if [ "$got" -eq "$want" ]; then ok "$desc"; else bad "$desc (exit $got, expected $want)"; fi
+}
 
-desc="worker can't read any home directory";  check bash -c 'for d in /home/* /root; do runuser -u ceo-worker -- test -r "$d" && exit 1; done; exit 0'
-desc="worker can't read CEO's settings";      check bash -c '! runuser -u ceo-worker -- test -r /etc/ceo/env'
-desc="worker can't read the ledger";          check bash -c '! runuser -u ceo-worker -- test -r /var/lib/ceo/ledger.db'
-desc="worker has no sudo";                    check bash -c '! runuser -u ceo-worker -- sudo -n true 2>/dev/null'
-desc="worker isn't in docker/sudo groups";    check bash -c '! id -nG ceo-worker | grep -qwE "docker|sudo|adm"'
-desc="ceo can run as the worker";             check runuser -u ceo -- sudo -n -u ceo-worker true
-desc="worker can't reach the Signal API";     check bash -c '! runuser -u ceo-worker -- curl -s -m 3 -o /dev/null http://127.0.0.1:9922/'
-desc="worker can't reach the home network";   check bash -c '! runuser -u ceo-worker -- curl -s -m 3 -o /dev/null "http://$(ip route | awk "/default/ {print \$3; exit}")/"'
-desc="worker can reach the internet";         check runuser -u ceo-worker -- curl -s -m 10 -o /dev/null https://opencode.ai/
-desc="ceo.service is running";                check systemctl is-active --quiet ceo.service
+if as_worker true; then ok "can run commands as the worker"; else bad "can't run commands as the worker"; fi
+expect_exit 0 "worker can read its own home"            as_worker test -r /var/lib/ceo-worker
+expect_exit 1 "worker can't read CEO's settings"        as_worker test -r /etc/ceo/env
+expect_exit 1 "worker can't read CEO's home or ledger"  as_worker test -r /var/lib/ceo
+if as_worker bash -c 'for d in /home/* /root; do [ -e "$d" ] || continue; test -r "$d" && { echo "$d"; exit 1; }; done; exit 0'
+then ok "worker can't read any home directory"; else bad "worker can read a home directory (or the check couldn't run)"; fi
+expect_exit 1 "worker has no sudo"                      as_worker sudo -n true
+if id -nG ceo-worker | grep -qwE "docker|sudo|adm|lxd"; then bad "worker is in a privileged group"; else ok "worker isn't in docker/sudo/adm/lxd"; fi
+expect_exit 0 "ceo can run as the worker"               runuser -u ceo -- sudo -n -u ceo-worker true
+# The cleanup CEO runs after every task (Sandbox._clean_up): nothing survives it.
+runuser -u ceo -- sudo -n -u ceo-worker -- bash -c 'nohup sleep 300 >/dev/null 2>&1 &' || true
+runuser -u ceo -- sudo -n -u ceo-worker -- pkill -KILL -u ceo-worker || true
+sleep 1
+expect_exit 1 "no worker process survives CEO's cleanup" pgrep -u ceo-worker
+# Network: curl exit 7 means "couldn't connect" (refused or rejected), so a
+# typo, a missing curl or a failed account switch can't pass these.
+expect_exit 0 "worker can reach the internet"           as_worker curl -s -m 10 -o /dev/null https://opencode.ai/
+expect_exit 7 "worker can't reach the Signal API (127.0.0.1:9922)" as_worker curl -s -m 3 -o /dev/null http://127.0.0.1:9922/
+gateway=$(ip route | awk '/^default/ {print $3; exit}')
+if [ -z "$gateway" ]; then
+  bad "no default route found; couldn't check the home network"
+else
+  expect_exit 7 "worker can't reach the home network ($gateway)" as_worker curl -s -m 3 -o /dev/null "http://$gateway/"
+fi
+if systemctl is-active --quiet ceo.service; then ok "ceo.service is running"; else bad "ceo.service isn't running"; fi
 
 if runuser -u ceo-worker -- test -r /media/admin/Data_Vault 2>/dev/null; then
   echo "  WARN worker can read /media/admin/Data_Vault (world-readable). C5 says it shouldn't;"
