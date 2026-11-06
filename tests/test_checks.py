@@ -222,7 +222,7 @@ def test_high_radius_denial_retries(setup):
     [
         (FakeWorker(ok=False), "worker failed"),
         (FakeWorker(files={"hello.txt": "hello\n"}, text="Done, no section"), "ASSUMPTIONS"),
-        (FakeWorker(files={}), "changed nothing"),
+        (FakeWorker(files={}), "changed nothing and the check fails"),
     ],
 )
 def test_failed_attempts(setup, worker, reason):
@@ -318,3 +318,16 @@ def test_re_approval_restarts_the_integration_branch(setup):
     tip = git(setup["repo"], "rev-parse", "ceo/demo/integration")
     assert git(setup["repo"], "rev-parse", f"{tip}^") == new
     assert "integration.reset" in [r[0] for r in setup["conn"].execute("SELECT kind FROM events")]
+
+
+
+def test_no_changes_but_the_check_passes_completes_without_a_commit(setup):
+    # The work is already on the integration branch (an earlier task did it).
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
+    ex.run_task(plan(setup), TASK)
+    tip = git(setup["repo"], "rev-parse", "ceo/demo/integration")
+    setup["conn"].execute("UPDATE tasks SET status = 'pending'")
+    setup["conn"].commit()
+    ex.worker = FakeWorker(files={})
+    assert ex.run_task(plan(setup), TASK) == "completed"
+    assert git(setup["repo"], "rev-parse", "ceo/demo/integration") == tip  # nothing new
