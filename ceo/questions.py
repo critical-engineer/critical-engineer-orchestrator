@@ -119,9 +119,17 @@ def handle_message(
         return f"Q{question_id} was already answered: {question['answer']}"
 
     if question["gate_id"] is not None:
-        word, _, rest = answer.partition(" ")
-        word = word.lower().rstrip(".!,:")
+        parts = answer.split(None, 1)  # any whitespace, including a new line
+        word = parts[0].lower().rstrip(".!,:")
+        rest = parts[1] if len(parts) > 1 else ""
         if word in _APPROVE:
+            if rest.strip():
+                # An approval can't carry conditions: they'd be silently dropped.
+                return (
+                    f"Q{question_id}: an approval takes no extra text, so nothing was recorded. "
+                    f"Reply 'Q{question_id} approve' on its own, or 'Q{question_id} deny <reason>' "
+                    "if it should change first."
+                )
             decision, reason = "approved", None
         elif word in _DENY:
             decision, reason = "denied", rest.strip()
@@ -196,7 +204,10 @@ def poll_once(
     conn: sqlite3.Connection, channel: Channel, engineer: Engineer, *, wait: float = 30
 ) -> int:
     """Read new messages, record answers, reply. Returns the number of messages handled."""
-    batch = channel.receive(_get_cursor(conn, channel.name), wait=wait)
+    receive = getattr(channel, "receive", None)
+    if receive is None:
+        raise ChannelError(f"the {channel.name} channel can't receive answers; use matrix")
+    batch = receive(_get_cursor(conn, channel.name), wait=wait)
     if batch.gap:
         record_event(conn, "chat.gap", detail={"channel": channel.name})
     for message in batch.messages:

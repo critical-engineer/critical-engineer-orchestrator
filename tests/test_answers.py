@@ -309,3 +309,36 @@ def test_oversized_question_numbers_get_help_and_do_not_block_polling(conn, chan
     channel.inbox = [InboundBatch([Inbound("$1", ME, f"Q{number} yes")], "c1")]
     poll_once(conn, channel, ENGINEER)  # must not raise
     assert conn.execute("SELECT value FROM cursors WHERE channel = 'fake'").fetchone()[0] == "c1"
+
+
+# review round 2 (CodeRabbit on #9)
+
+
+@pytest.mark.parametrize("text", ["Q{n} approve\nthanks", "Q{n} approve once CI is green", "Q{n} yes, but not to main"])
+def test_approval_with_extra_text_is_refused_not_trimmed(conn, gate_q, text):
+    gate_id, qid = gate_q
+    out = reply(conn, text.format(n=qid))
+    assert "takes no extra text" in out and "nothing was recorded" in out
+    assert gate_status(conn, gate_id)["status"] == "open"
+    assert answer(conn, qid) == (None, None)
+
+
+def test_approve_alone_on_its_own_line_still_works(conn, gate_q):
+    gate_id, qid = gate_q
+    reply(conn, f"Q{qid}\tapprove\n")
+    assert gate_status(conn, gate_id)["status"] == "approved"
+
+
+def test_deny_reason_on_the_next_line(conn, gate_q):
+    gate_id, qid = gate_q
+    reply(conn, f"Q{qid} deny\nthe plan skips F3")
+    assert tuple(gate_status(conn, gate_id)) == ("denied", "the plan skips F3", ME)
+
+
+def test_polling_a_send_only_channel_is_a_clear_error(conn):
+    from ceo.channels.signal_api import SignalChannel
+    from ceo.notify import ChannelError
+
+    signal = SignalChannel("http://127.0.0.1:9922", "+447700900001", "+447700900002")
+    with pytest.raises(ChannelError, match="can't receive answers"):
+        poll_once(conn, signal, ENGINEER)
