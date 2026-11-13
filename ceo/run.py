@@ -18,7 +18,7 @@ Nothing in a cycle needs an LLM except the worker itself (key design principle).
 Configuration (environment, usually from the settings file):
   CEO_PLAN_REPO       owner/name of the plan repo on GitHub
   CEO_PLAN_REPO_DIR   CEO's own clone of it
-  CEO_PLANS           comma-separated change names to run, e.g. "media-box"
+  CEO_PLANS           comma-separated change names to run, e.g. "media-box" (may be empty)
   CEO_WORK_ROOT       where per-task workspaces go (shared with the worker user)
   CEO_INTERVAL        seconds between cycles in `loop` mode (default 60)
   CEO_MAX_ATTEMPTS    attempts before an escalation gate (default 2)
@@ -246,7 +246,8 @@ class Orchestrator:
 
 def from_env(env: dict[str, str] | None = None) -> Orchestrator:
     env = dict(os.environ if env is None else env)
-    missing = [k for k in ("CEO_PLAN_REPO", "CEO_PLAN_REPO_DIR", "CEO_PLANS", "CEO_WORK_ROOT") if not env.get(k)]
+    # CEO_PLANS may be empty: CEO then only reads chat until a plan is configured.
+    missing = [k for k in ("CEO_PLAN_REPO", "CEO_PLAN_REPO_DIR", "CEO_WORK_ROOT") if not env.get(k)]
     if missing:
         raise SystemExit(f"not set: {', '.join(missing)}")
     conn = open_ledger(ledger_path(env))
@@ -268,7 +269,7 @@ def from_env(env: dict[str, str] | None = None) -> Orchestrator:
     )
     return Orchestrator(
         conn=conn,
-        plans=[p.strip() for p in env["CEO_PLANS"].split(",") if p.strip()],
+        plans=[p.strip() for p in env.get("CEO_PLANS", "").split(",") if p.strip()],
         repo=PlanRepo(Path(env["CEO_PLAN_REPO_DIR"])),
         github=GitHub(env["CEO_PLAN_REPO"], token=env.get("CEO_GITHUB_TOKEN") or None),
         engineer=Engineer.from_env(env),

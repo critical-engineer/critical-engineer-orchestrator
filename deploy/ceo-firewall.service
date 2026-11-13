@@ -1,0 +1,14 @@
+[Unit]
+Description=CEO worker network containment (nftables table inet ceo_worker)
+After=network-pre.target
+Before=ceo.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/nft -f /etc/ceo/ceo-worker.nft
+# "-": stopping is fine if the table is already gone.
+ExecStop=-/usr/sbin/nft delete table inet ceo_worker
+
+[Install]
+WantedBy=multi-user.target

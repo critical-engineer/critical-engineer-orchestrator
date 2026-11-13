@@ -16,6 +16,7 @@ import os
 import re
 import signal
 import subprocess
+import sys
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,8 +38,20 @@ class Sandbox:
     """
 
     user: str | None = "ceo-worker"
+    # Put first on PATH for every command: sudo resets PATH, and checks need
+    # tools such as pytest (from CEO's own venv on the box).
+    path: str | None = None
 
-    def command(self, argv: list[str]) -> list[str]:
+    def command(self, argv: list[str], env: dict | None = None) -> list[str]:
+        if self.path:
+            # Under sudo the environment is reset, so the rest is the system
+            # path; running directly (dev, tests), the inherited PATH follows,
+            # so tools like a user-installed opencode are still found.
+            inherited = (os.environ if env is None else env).get("PATH", "/usr/bin:/bin")
+            rest = "/usr/local/bin:/usr/bin:/bin" if self.user else inherited
+            # An absolute launcher: Popen looks the program up in the current
+            # environment, which an explicit env's PATH may not cover.
+            argv = ["/usr/bin/env", f"PATH={self.path}:{rest}", *argv]
         if not self.user:
             return list(argv)
         # -n: never prompt; the sudoers rule allows exactly this (D5).
@@ -59,7 +72,7 @@ class Sandbox:
         Output is read while the command runs, so a command that prints without
         end (``yes``) can't grow CEO's memory: only the tail is kept.
         """
-        command = self.command(argv)
+        command = self.command(argv, env)
         process = subprocess.Popen(
             command,
             cwd=cwd,
@@ -269,8 +282,12 @@ class OpencodeWorker:
 def worker_from_env(env: dict[str, str] | None = None) -> OpencodeWorker:
     env = os.environ if env is None else env
     user = env.get("CEO_WORKER_USER", "ceo-worker")
+    # By default the worker (and every check) sees CEO's own venv first, which
+    # on the box has pytest; under `python -m` the task's exported code still
+    # shadows the installed copy, because the current directory comes first.
+    path = env.get("CEO_WORKER_PATH", os.path.dirname(sys.executable))
     return OpencodeWorker(
-        sandbox=Sandbox(user=user or None),
+        sandbox=Sandbox(user=user or None, path=path or None),
         model=env.get("CEO_WORKER_MODEL", DEFAULT_MODEL),
         binary=env.get("CEO_OPENCODE_BIN", "opencode"),
         timeout=float(env.get("CEO_WORKER_TIMEOUT", "1800")),
