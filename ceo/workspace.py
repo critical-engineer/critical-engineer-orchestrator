@@ -107,3 +107,40 @@ def commit_result(repo: Path, base: str, worker_dir: Path, *, branch: str, messa
             return sha
         finally:
             _git(repo, "worktree", "remove", "--force", str(tree))
+
+
+def _git_answer(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    """Run a git query whose exit code 1 means "no". Any other failure raises:
+    a broken repo must never be mistaken for a negative answer, since callers
+    reset branches on "no"."""
+    result = subprocess.run(["git", *_GIT_SAFE, "-C", str(repo), *args], capture_output=True, timeout=60)
+    if result.returncode not in (0, 1):
+        raise WorkspaceError(f"git {args[0]} failed: {result.stderr.decode(errors='replace').strip()}")
+    return result
+
+
+def branch_tip(repo: Path, branch: str) -> str | None:
+    result = _git_answer(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    return result.stdout.decode().strip() if result.returncode == 0 else None
+
+
+def is_ancestor(repo: Path, ancestor: str, commit: str) -> bool:
+    return _git_answer(repo, "merge-base", "--is-ancestor", ancestor, commit).returncode == 0
+
+
+def set_branch(repo: Path, branch: str, commit: str) -> None:
+    _git(repo, "branch", "--force", branch, commit)
+
+
+def fast_forward(repo: Path, branch: str, commit: str) -> bool:
+    """Move ``branch`` to ``commit`` only if that's a fast-forward. Returns whether it moved.
+
+    Integration never merges or cherry-picks: a commit that isn't a descendant of
+    the branch tip was built on older work, and its check didn't run against
+    what the branch holds now.
+    """
+    current = branch_tip(repo, branch)
+    if current is not None and not is_ancestor(repo, current, commit):
+        return False
+    set_branch(repo, branch, commit)
+    return True
