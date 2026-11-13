@@ -120,9 +120,10 @@ systemctl daemon-reload
 systemctl enable --now ceo-firewall.service
 systemctl restart ceo-firewall.service
 
-say "service"
+say "service (stopped while the sandbox is checked)"
+# The checks below kill every worker process; CEO must not be running a task.
 systemctl enable ceo.service
-systemctl restart ceo.service
+systemctl stop ceo.service 2>/dev/null || true
 
 say "checking the sandbox from the worker's side"
 fail=0
@@ -172,11 +173,24 @@ else
   expect_exit 7 "worker can't reach the home network ($gateway)" as_worker curl -s -m 3 -o /dev/null "http://$gateway/"
 fi
 expect_exit 0 "checks can run pytest as the worker" as_worker env PATH=/opt/ceo/.venv/bin:/usr/bin:/bin python -m pytest --version
-if systemctl is-active --quiet ceo.service; then ok "ceo.service is running"; else bad "ceo.service isn't running"; fi
 
 if runuser -u ceo-worker -- test -r /media/admin/Data_Vault 2>/dev/null; then
   echo "  WARN worker can read /media/admin/Data_Vault (world-readable). C5 says it shouldn't;"
   echo "       not changed here because it could affect Jellyfin. Decide, e.g.: chmod o-rx /media/admin/Data_Vault"
 fi
 
-[ "$fail" -eq 0 ] && echo "All checks passed." || { echo "Some checks FAILED; see above."; exit 1; }
+if [ "$fail" -ne 0 ]; then
+  echo "Some checks FAILED; see above. ceo.service is left stopped."
+  exit 1
+fi
+
+say "starting CEO"
+systemctl start ceo.service
+sleep 2
+if systemctl is-active --quiet ceo.service; then
+  echo "  ok   ceo.service is running"
+  echo "All checks passed."
+else
+  echo "  FAIL ceo.service didn't start: journalctl -u ceo -n 50"
+  exit 1
+fi
