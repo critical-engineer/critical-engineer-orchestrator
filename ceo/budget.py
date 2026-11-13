@@ -83,7 +83,7 @@ def check_budget(
             pause = " Dispatch is paused until next month or a higher cap." if threshold >= 1.0 else ""
             try:
                 alert(f"API spend ${state.spent_usd:.2f} has {verb} the ${cap_usd:.2f} monthly budget.{pause}")
-            except Exception as exc:  # retried on the next check
+            except Exception as exc:  # noqa: BLE001 - any delivery failure is recorded and retried next check
                 sent, error = False, str(exc)[:500]
         detail = {"month": month, "threshold": threshold, "spent_usd": state.spent_usd,
                   "cap_usd": cap_usd, "delivered": sent}
