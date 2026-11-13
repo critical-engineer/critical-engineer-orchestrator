@@ -137,6 +137,8 @@ class Orchestrator:
         specs, deps = self._sync(plan)
         for line in self.executor.resolve_gates(plan, specs):
             self.log.append(f"{change}: applied {line}")
+        for task_id in self.executor.route_blocked(plan, specs):
+            self.log.append(f"{change}: task {task_id} is blocked; asked the engineer")
 
         # A re-approval the integration branch isn't built on sends completed
         # tasks back to run again; do that before choosing what's ready.
