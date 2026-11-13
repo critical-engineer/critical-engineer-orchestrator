@@ -16,6 +16,7 @@ import os
 import re
 import signal
 import subprocess
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -44,7 +45,20 @@ class Sandbox:
         # -H: the worker's own HOME, so opencode uses the worker's config.
         return ["sudo", "-n", "-H", "-u", self.user, "--", *argv]
 
-    def run(self, argv: list[str], *, cwd: Path, timeout: float, env: dict | None = None) -> subprocess.CompletedProcess:
+    def run(
+        self,
+        argv: list[str],
+        *,
+        cwd: Path,
+        timeout: float,
+        env: dict | None = None,
+        max_output: int = 10_000_000,
+    ) -> subprocess.CompletedProcess:
+        """Run a command; keep at most the last ``max_output`` bytes of each stream.
+
+        Output is read while the command runs, so a command that prints without
+        end (``yes``) can't grow CEO's memory: only the tail is kept.
+        """
         command = self.command(argv)
         process = subprocess.Popen(
             command,
@@ -52,37 +66,42 @@ class Sandbox:
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             env=env,
             start_new_session=True,
         )
+        out, err = _Tail(max_output), _Tail(max_output)
+        readers = [
+            threading.Thread(target=out.drain, args=(process.stdout,), daemon=True),
+            threading.Thread(target=err.drain, args=(process.stderr,), daemon=True),
+        ]
+        for reader in readers:
+            reader.start()
+        note = ""
         try:
-            stdout, stderr = process.communicate(timeout=timeout)
-            code = process.returncode
+            code = process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             self._kill_group(process.pid, signal.SIGTERM)  # sudo relays TERM to the command
             try:
-                stdout, stderr = process.communicate(timeout=5)
+                process.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 self._kill_group(process.pid, signal.SIGKILL)
                 # As CEO, SIGKILL reaches only sudo: the worker's own processes
-                # can only be killed as the worker user. Do that *before* the
-                # last read, or a process holding the output pipe blocks it.
+                # can only be killed as the worker user. Do that before waiting
+                # again, or a process holding the output pipe keeps it open.
                 self._clean_up(process.pid)
                 try:
-                    stdout, stderr = process.communicate(timeout=10)
+                    process.wait(timeout=10)
                 except subprocess.TimeoutExpired:
-                    # Something still holds the pipes: stop reading and give up
-                    # on the output rather than block the orchestrator.
                     process.kill()
-                    for pipe in (process.stdout, process.stderr):
-                        if pipe is not None:
-                            pipe.close()
-                    stdout, stderr = "", "output lost: a process kept the output open"
-            code, stderr = 124, (stderr or "") + f"\ntimed out after {timeout}s"
+            code, note = 124, f"\ntimed out after {timeout}s"
         finally:
             self._clean_up(process.pid)
-        return subprocess.CompletedProcess(command, code, stdout or "", stderr or "")
+        for reader in readers:
+            reader.join(timeout=10)
+        if any(reader.is_alive() for reader in readers):
+            # Something still holds the pipes: stop reading rather than block.
+            note += "\noutput may be incomplete: a process kept the output open"
+        return subprocess.CompletedProcess(command, code, out.text(), err.text() + note)
 
     @staticmethod
     def _kill_group(pgid: int, sig: int) -> None:
@@ -100,6 +119,27 @@ class Sandbox:
             )
         else:
             self._kill_group(pgid, signal.SIGKILL)
+
+
+class _Tail:
+    """Collects a stream's output, keeping only the last ``limit`` bytes."""
+
+    def __init__(self, limit: int):
+        self.limit, self.data, self.truncated = limit, bytearray(), False
+
+    def drain(self, pipe) -> None:
+        try:
+            while chunk := pipe.read1(65536):
+                self.data += chunk
+                if len(self.data) > self.limit:
+                    del self.data[: len(self.data) - self.limit]
+                    self.truncated = True
+        except (OSError, ValueError):
+            pass  # the pipe was closed under us
+
+    def text(self) -> str:
+        text = self.data.decode("utf-8", "replace")
+        return ("[... earlier output truncated ...]\n" + text) if self.truncated else text
 
 
 def _text(value) -> str:

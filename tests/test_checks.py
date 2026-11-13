@@ -59,9 +59,9 @@ class RecordingSandbox(Sandbox):
         super().__init__(user=None)
         object.__setattr__(self, "calls", [])
 
-    def run(self, argv, *, cwd, timeout, env=None):
+    def run(self, argv, *, cwd, timeout, env=None, **kwargs):
         self.calls.append((argv, Path(cwd)))
-        return super().run(argv, cwd=cwd, timeout=timeout, env=env)
+        return super().run(argv, cwd=cwd, timeout=timeout, env=env, **kwargs)
 
 
 def git(cwd, *args):
@@ -303,23 +303,41 @@ def test_a_result_built_on_older_work_is_redone_not_merged(setup):
     assert "task.integration_stale" in kinds
 
 
-def test_re_approval_restarts_the_integration_branch(setup):
-    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
-    ex.run_task(plan(setup), TASK)
-    # The plan is re-approved at a new commit that isn't built on the old work.
-    (setup["repo"] / "openspec" / "changes" / "demo" / "tasks.md").write_text("- [ ] 1.1 Write hello v2\n")
+def reapprove(setup, text="- [ ] 1.1 Write hello v2\n"):
+    """A plan change committed on main and approved, not built on the old integration tip."""
+    (setup["repo"] / "openspec" / "changes" / "demo" / "tasks.md").write_text(text)
     git(setup["repo"], "checkout", "-q", "main")
     git(setup["repo"], "commit", "-qam", "plan v2")
     new = git(setup["repo"], "rev-parse", "HEAD")
     setup["conn"].execute("UPDATE plans SET approved_sha = ?", (new,))
-    setup["conn"].execute("UPDATE tasks SET status = 'pending'")
     setup["conn"].commit()
-    ex.run_task(plan(setup), TASK)
+    return new
+
+
+def test_re_approval_restarts_the_branch_and_reruns_completed_tasks(setup):
+    # Production path: nothing resets the tasks by hand.
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
+    assert ex.run_task(plan(setup), TASK) == "completed"
+    new = reapprove(setup)
+    assert ex.ensure_integration(plan(setup)) is True
+    assert task_row(setup)["status"] == "pending"  # completed work runs again on the new base
+    assert git(setup["repo"], "rev-parse", "ceo/demo/integration") == new
+    kinds = [r[0] for r in setup["conn"].execute("SELECT kind FROM events")]
+    assert "integration.reset" in kinds and "task.rerun" in kinds
+    assert ex.run_task(plan(setup), TASK) == "completed"
     tip = git(setup["repo"], "rev-parse", "ceo/demo/integration")
     assert git(setup["repo"], "rev-parse", f"{tip}^") == new
-    assert "integration.reset" in [r[0] for r in setup["conn"].execute("SELECT kind FROM events")]
 
 
+def test_a_task_never_runs_on_a_base_whose_dependencies_were_just_sent_back(setup):
+    add_task(setup, "1.2")
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
+    ex.run_task(plan(setup), TASK)
+    reapprove(setup)
+    # The loop normally calls ensure_integration first; if it didn't, the
+    # attempt defers instead of running without 1.1's work.
+    assert ex.run_task(plan(setup), TaskSpec("1.2", "x", "true", "low")) == "deferred"
+    assert setup["conn"].execute("SELECT count(*) FROM runs").fetchone()[0] == 1
 
 def test_no_changes_but_the_check_passes_completes_without_a_commit(setup):
     # The work is already on the integration branch (an earlier task did it).
@@ -403,3 +421,65 @@ def test_each_run_records_the_check_it_ran(setup):
     ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
     ex.run_task(plan(setup), TASK)
     assert setup["conn"].execute("SELECT check_command FROM runs").fetchone()[0] == TASK.check
+
+
+
+# review round 3 (CodeRabbit on #15)
+
+
+def test_check_output_is_bounded_while_it_runs(setup):
+    # `yes` prints without end; only the tail is kept, so memory stays bounded.
+    endless = TaskSpec("1.1", "x", "yes 'spam spam' | head -c 50000000; true", "low")  # 50 MB
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
+    ex.run_task(plan(setup), endless)
+    output = setup["conn"].execute("SELECT check_output FROM runs").fetchone()[0]
+    assert len(output) <= 20_000 and output.endswith("spam spam\n")
+
+
+def test_sandbox_keeps_only_the_tail_of_large_output(tmp_path):
+    result = Sandbox(user=None).run(["bash", "-c", "head -c 5000000 /dev/zero | tr '\\0' a; echo END"],
+                                    cwd=tmp_path, timeout=30, max_output=1000)
+    assert result.stdout.startswith("[... earlier output truncated ...]") and result.stdout.endswith("END\n")
+    assert len(result.stdout) < 1100
+
+
+def test_a_gate_decided_under_an_older_approval_completes_nothing(setup):
+    high = TaskSpec("1.1", "Write hello", "grep -q hello hello.txt", "high")
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
+    assert ex.run_task(plan(setup), high) == "gate:high_radius"
+    gate_id = gates(setup)[0]["id"]
+    reapprove(setup)                       # the plan moved on before the decision
+    decide_gate(setup["conn"], gate_id, "approved", route="chat", identity=ME, engineer=ENGINEER)
+    assert ex.resolve_gates(plan(setup), {"1.1": high}) == ["1.1:high_radius:approved:superseded"]
+    assert task_row(setup)["status"] == "pending"
+    assert git(setup["repo"], "rev-parse", "--verify", "-q", "ceo/demo/integration") != gates(setup)[0]["payload"]
+
+
+def test_a_gate_decided_under_an_older_task_definition_completes_nothing(setup):
+    high = TaskSpec("1.1", "Write hello", "grep -q hello hello.txt", "high")
+    setup["conn"].execute("UPDATE tasks SET definition_hash = 'v1'")
+    setup["conn"].commit()
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
+    ex.run_task(plan(setup), high)
+    setup["conn"].execute("UPDATE tasks SET definition_hash = 'v2'")   # sync saw a new definition
+    setup["conn"].commit()
+    decide_gate(setup["conn"], gates(setup)[0]["id"], "approved", route="chat", identity=ME, engineer=ENGINEER)
+    assert ex.resolve_gates(plan(setup), {"1.1": high}) == ["1.1:high_radius:approved:superseded"]
+    assert task_row(setup)["status"] == "pending"
+
+
+def test_reapplying_a_gate_after_a_crash_does_not_duplicate_its_successor(setup):
+    high = TaskSpec("1.1", "Write hello", "grep -q hello hello.txt", "high")
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}, text="ASSUMPTIONS:\n- x"))
+    ex.run_task(plan(setup), high)                      # assumption gate
+    assumption = gates(setup)[0]
+    decide_gate(setup["conn"], assumption["id"], "approved", route="chat", identity=ME, engineer=ENGINEER)
+    gate_row = setup["conn"].execute("SELECT * FROM gates WHERE id = ?", (assumption["id"],)).fetchone()
+    # Apply twice, as if CEO crashed before recording that it had applied it.
+    for _ in range(2):
+        ex._after_gate = assumption["id"]
+        try:
+            assert ex._apply(plan(setup), high, gate_row) == "gate:high_radius"
+        finally:
+            ex._after_gate = None
+    assert [g["kind"] for g in gates(setup)] == ["unsanctioned_assumption", "high_radius"]

@@ -63,6 +63,7 @@ class Executor:
     escalation_model: str | None = None
     check_timeout: float = 900
     channel: Channel | None = None
+    _after_gate: int | None = dataclasses.field(default=None, init=False, repr=False)
 
     # -- one attempt -------------------------------------------------------
 
@@ -71,7 +72,10 @@ class Executor:
         conn, change = self.conn, plan["change"]
         if not plan["approved_sha"]:
             raise ValueError(f"plan {change} isn't approved")
-        base = self._integration_base(plan)
+        if self.ensure_integration(plan):
+            # Work this task may depend on was just sent back to run again.
+            return "deferred"
+        base = branch_tip(self.repo, integration_branch(change))
         model = self._model_for(plan["id"], task.id)
         worker = dataclasses.replace(self.worker, model=model) if model != self.worker.model else self.worker
         with conn:
@@ -157,21 +161,37 @@ class Executor:
                 (sha, check_exit, output, run_id),
             )
 
-    def _integration_base(self, plan: sqlite3.Row) -> str:
-        """The tip of the integration branch, started (or restarted) at the approved commit.
+    def ensure_integration(self, plan: sqlite3.Row) -> bool:
+        """Make sure the integration branch builds on the approved commit.
 
-        If the plan was re-approved at a commit the branch doesn't build on,
-        the branch starts again from the new approved commit.
+        If it doesn't (a plan re-approved at a commit the branch isn't built
+        on), the branch restarts at the approved commit and every completed task
+        goes back to ``pending`` to run again on the new base: the engineer's
+        policy is to re-run, so a check always ran against what the branch holds.
+        Returns True if completed tasks were sent back. Call before choosing the
+        next task.
         """
         branch, approved = integration_branch(plan["change"]), plan["approved_sha"]
         tip = branch_tip(self.repo, branch)
-        if tip is None or not is_ancestor(self.repo, approved, tip):
+        if tip is not None and is_ancestor(self.repo, approved, tip):
+            return False
+        completed = [
+            r[0] for r in self.conn.execute(
+                "SELECT id FROM tasks WHERE plan_id = ? AND status = 'completed' AND tombstoned = 0", (plan["id"],)
+            )
+        ]
+        set_branch(self.repo, branch, approved)
+        with self.conn:
             if tip is not None:
-                record_event(self.conn, "integration.reset", plan_id=plan["id"],
+                append_event(self.conn, "integration.reset", plan_id=plan["id"],
                              detail={"branch": branch, "old_tip": tip, "approved_sha": approved})
-            set_branch(self.repo, branch, approved)
-            return approved
-        return tip
+            for task_id in completed:
+                self.conn.execute(
+                    "UPDATE tasks SET status = 'pending' WHERE plan_id = ? AND id = ?", (plan["id"], task_id)
+                )
+                append_event(self.conn, "task.rerun", plan_id=plan["id"], task_id=task_id,
+                             detail={"reason": "the integration branch restarted at a new approved commit"})
+        return bool(completed)
 
     def _integrate(self, plan: sqlite3.Row, task: TaskSpec, sha: str) -> bool:
         """Add a finished task's commit to the integration branch (fast-forward only)."""
@@ -185,7 +205,9 @@ class Executor:
         checkdir = self.work_root / change / f"{task.id}-{attempt}-check"
         shutil.rmtree(checkdir, ignore_errors=True)
         export(self.repo, sha, checkdir)
-        result = self.check_sandbox.run(["bash", "-c", task.check], cwd=checkdir, timeout=self.check_timeout)
+        result = self.check_sandbox.run(
+            ["bash", "-c", task.check], cwd=checkdir, timeout=self.check_timeout, max_output=_OUTPUT_LIMIT
+        )
         output = (result.stdout or "") + (result.stderr or "")
         return result.returncode, output[-_OUTPUT_LIMIT:]
 
@@ -234,6 +256,25 @@ class Executor:
         )
 
     def _gate(self, plan: sqlite3.Row, task: TaskSpec, kind: str, payload: dict, summary: str) -> str:
+        # A gate covers one approved plan and one task definition: a decision
+        # made under an older one is never applied to a newer one.
+        payload = {
+            **payload,
+            "approved_sha": plan["approved_sha"],
+            "definition_hash": self._definition_hash(plan["id"], task.id),
+        }
+        if self._after_gate is not None:
+            # Opened while applying another gate: if a crash made us apply that
+            # gate twice, reuse the gate opened the first time.
+            payload["after_gate"] = self._after_gate
+            existing = self.conn.execute(
+                "SELECT id FROM gates WHERE plan_id = ? AND task_id = ? AND kind = ?"
+                " AND json_extract(payload, '$.after_gate') = ?",
+                (plan["id"], task.id, kind, self._after_gate),
+            ).fetchone()
+            if existing:
+                self._set_status(plan["id"], task.id, "blocked")
+                return f"gate:{kind}"
         gate_id = open_gate(self.conn, plan["id"], kind, payload, task_id=task.id)
         self._set_status(plan["id"], task.id, "blocked")
         if self.channel is not None:
@@ -269,7 +310,11 @@ class Executor:
             ).fetchone()
             outcome = "ignored"
             if task is not None and status is not None and status["status"] == "blocked":
-                outcome = self._apply(plan, task, gate)
+                self._after_gate = gate["id"]
+                try:
+                    outcome = self._apply(plan, task, gate)
+                finally:
+                    self._after_gate = None
             record_event(self.conn, "task.gate_applied", plan_id=plan["id"], task_id=gate["task_id"],
                          detail={"gate": gate["id"], "outcome": outcome})
             applied.append(f"{gate['task_id']}:{gate['kind']}:{gate['status']}:{outcome}")
@@ -277,6 +322,13 @@ class Executor:
 
     def _apply(self, plan: sqlite3.Row, task: TaskSpec, gate: sqlite3.Row) -> str:
         payload = json.loads(gate["payload"])
+        if (payload.get("approved_sha") != plan["approved_sha"]
+                or payload.get("definition_hash") != self._definition_hash(plan["id"], task.id)):
+            # Decided for an older plan or task definition: it covers nothing now.
+            self._set_status(plan["id"], task.id, "pending")
+            record_event(self.conn, "task.gate_superseded", plan_id=plan["id"], task_id=task.id,
+                         detail={"gate": gate["id"]})
+            return "superseded"
         approved = gate["status"] == "approved"
         if gate["kind"] == "high_radius":
             if approved:
@@ -321,6 +373,12 @@ class Executor:
         if last_failure and last_failure[0]:
             reasons.append(f"The last attempt failed: {last_failure[0]}")
         return reasons
+
+    def _definition_hash(self, plan_id: int, task_id: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT definition_hash FROM tasks WHERE plan_id = ? AND id = ?", (plan_id, task_id)
+        ).fetchone()
+        return row[0] if row else None
 
     def _model_for(self, plan_id: int, task_id: str) -> str:
         """The default model, or the stronger one an approved escalation allowed."""
