@@ -20,7 +20,8 @@ When every task of an approved plan is completed, CEO SHALL push the task branch
 #### Scenario: Publishing failed
 - **WHEN** publishing a completed plan fails, whether the push or the pull request call
 - **THEN** a later cycle tries again, even though the plan's completion was already announced
-- **AND** a push that already succeeded is not rejected when it's retried
+- **AND** a push that already succeeded is not rejected when it's retried, even if CEO stopped before recording it
+- **AND** if the remote branch holds a commit CEO never pushed, CEO doesn't overwrite or adopt it, and asks the engineer
 
 #### Scenario: Pull request already exists
 - **WHEN** a pull request from `ceo/<change>/integration` already exists
@@ -63,6 +64,7 @@ Publishing SHALL go through one interface, chosen by configuration, with "none" 
 #### Scenario: No publisher configured
 - **WHEN** the publisher setting is `none` or absent
 - **THEN** a completed plan is announced as today and nothing is pushed
+- **AND** if a real publisher is configured later, plans completed in the meantime are published then
 
 #### Scenario: Unknown publisher
 - **WHEN** the publisher setting names an unknown kind
