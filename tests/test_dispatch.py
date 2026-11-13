@@ -86,19 +86,19 @@ def test_sandbox_runs_as_the_worker_user_without_prompting():
 def test_sandbox_puts_the_tool_path_first_inside_sudo():
     command = Sandbox(user="ceo-worker", path="/opt/ceo/.venv/bin").command(["python", "-m", "pytest"])
     assert command[:6] == ["sudo", "-n", "-H", "-u", "ceo-worker", "--"]
-    assert command[6:8] == ["env", "PATH=/opt/ceo/.venv/bin:/usr/local/bin:/usr/bin:/bin"]
+    assert command[6:8] == ["/usr/bin/env", "PATH=/opt/ceo/.venv/bin:/usr/local/bin:/usr/bin:/bin"]
     assert command[8:] == ["python", "-m", "pytest"]
 
 
 def test_running_directly_keeps_the_inherited_path_after_the_tool_path(monkeypatch):
     monkeypatch.setenv("PATH", "/home/me/.opencode/bin:/usr/bin")
     command = Sandbox(user=None, path="/venv/bin").command(["opencode"])
-    assert command == ["env", "PATH=/venv/bin:/home/me/.opencode/bin:/usr/bin", "opencode"]
+    assert command == ["/usr/bin/env", "PATH=/venv/bin:/home/me/.opencode/bin:/usr/bin", "opencode"]
 
 
 def test_running_directly_keeps_an_explicit_environments_path():
     command = Sandbox(user=None, path="/venv/bin").command(["x"], env={"PATH": "/custom/bin"})
-    assert command == ["env", "PATH=/venv/bin:/custom/bin", "x"]
+    assert command == ["/usr/bin/env", "PATH=/venv/bin:/custom/bin", "x"]
 
 
 def test_checks_find_tools_on_the_configured_path(tmp_path):
@@ -325,3 +325,16 @@ def test_timeout_returns_even_if_group_signals_cannot_reach_the_worker(tmp_path)
     thread.join(timeout=30)
     assert not thread.is_alive(), "Sandbox.run hung after the timeout"
     assert result["r"].returncode == 124
+
+
+
+def test_run_works_with_an_explicit_path_that_has_no_env(tmp_path):
+    # The launcher must not depend on the explicit environment's PATH.
+    tool = tmp_path / "bin"
+    tool.mkdir()
+    (tool / "mytool").write_text("#!/bin/sh\necho found\n")
+    (tool / "mytool").chmod(0o755)
+    result = Sandbox(user=None, path=str(tool)).run(
+        ["mytool"], cwd=tmp_path, timeout=10, env={"PATH": str(tmp_path / "nothing-here")}
+    )
+    assert (result.returncode, result.stdout) == (0, "found\n")

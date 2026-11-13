@@ -34,12 +34,16 @@ def test_firewall_denies_the_worker_loopback_by_default_and_the_home_network():
     worker_rules = [line for line in active if "accept" in line.split() or "reject" in line.split()]
     worker_rules = [line for line in worker_rules if not line.startswith("type ")]
     assert worker_rules and all('meta skuid "ceo-worker"' in line for line in worker_rules)
+    # The loopback policy, exactly and in order: DNS, the ephemeral range, then
+    # reject. Any extra allow rule (e.g. a blanket `oifname "lo" accept`) fails.
     loopback = [line for line in worker_rules if 'oifname "lo"' in line]
-    # Only DNS and the ephemeral range are allowed, then everything else on lo is rejected.
-    assert loopback[-1].endswith('oifname "lo" counter reject')
-    allowed = " ".join(line for line in loopback if line.endswith("accept"))
-    assert "th dport 53 accept" in allowed and "th dport 32768-60999 accept" in allowed
-    assert "9922" not in allowed and "8096" not in allowed
+    assert loopback == [
+        'meta skuid "ceo-worker" oifname "lo" meta l4proto { tcp, udp } th dport 53 accept',
+        'meta skuid "ceo-worker" oifname "lo" meta l4proto { tcp, udp } th dport 32768-60999 accept',
+        'meta skuid "ceo-worker" oifname "lo" counter reject',
+    ]
+    # And nothing else in the chain accepts traffic for the worker.
+    assert [line for line in worker_rules if line.endswith("accept")] == loopback[:2]
     # Each private-network rule rejects exactly the expected ranges.
     private = {line for line in worker_rules if "daddr {" in line}
     assert private == {
