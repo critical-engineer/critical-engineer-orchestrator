@@ -137,14 +137,16 @@ class Orchestrator:
         for line in self.executor.resolve_gates(plan, specs):
             self.log.append(f"{change}: applied {line}")
 
+        task_id = self._next_ready(plan_id, deps)
+        if task_id is None:
+            # Completion costs nothing, so it's handled even at the budget cap:
+            # the last task can be the one that reaches it.
+            self._maybe_completed(plan, specs)
+            return
+
         budget = check_budget(self.conn, self.budget_usd, alert=self._alert)
         if not budget.allowed:
             self.log.append(f"{change}: budget reached (${budget.spent_usd:.2f} of ${budget.cap_usd:.2f})")
-            return
-
-        task_id = self._next_ready(plan_id, deps)
-        if task_id is None:
-            self._maybe_completed(plan, specs)
             return
         outcome = self.executor.run_task(plan, specs[task_id])
         self.log.append(f"{change}: task {task_id} -> {outcome}")
@@ -219,12 +221,11 @@ class Orchestrator:
             pass
 
     def _alert(self, text: str) -> None:
+        """Send a budget alert. A ChannelError propagates on purpose: check_budget
+        then records the alert as not delivered and retries it next cycle."""
         if self.channel is None:
             return
-        try:
-            notify(self.conn, self.channel, "blocked", text)
-        except ChannelError:
-            pass
+        notify(self.conn, self.channel, "blocked", text)
 
 
 def from_env(env: dict[str, str] | None = None) -> Orchestrator:
