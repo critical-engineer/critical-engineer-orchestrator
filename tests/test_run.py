@@ -382,3 +382,25 @@ def test_re_approval_reruns_completed_tasks_in_the_loop(world):
     assert "greet: task 1.2 -> completed" in orch.cycle()
     tip = git(world["ceo"], "rev-parse", "ceo/greet/integration")
     assert git(world["ceo"], "merge-base", "--is-ancestor", merge, tip) == ""  # built on the new plan
+
+
+def test_an_undelivered_approval_question_is_sent_again(world):
+    from ceo.notify import ChannelError
+
+    world["api"].routes[("GET", f"/repos/{REPO}/pulls/1")] = (200, {"merged_by": {"login": "someone-else"}})
+    orch, conn = world["orch"], world["conn"]
+
+    class DownChat(Chat):
+        def send(self, message):
+            raise ChannelError("chat is down")
+
+    orch.channel = orch.executor.channel = DownChat()
+    orch.cycle()                                   # the question is recorded, but not delivered
+    assert conn.execute("SELECT count(*) FROM questions").fetchone()[0] == 1
+    orch.channel = orch.executor.channel = world["chat"]
+    orch.cycle()                                   # sent again: same question, not a new one
+    asks = [m for m in world["chat"].sent if "Approval needed (plan_approval)" in m]
+    assert len(asks) == 1 and "Reply: Q1 " in asks[0]
+    assert conn.execute("SELECT count(*) FROM questions").fetchone()[0] == 1
+    orch.cycle()
+    assert len([m for m in world["chat"].sent if "Approval needed (plan_approval)" in m]) == 1  # once delivered

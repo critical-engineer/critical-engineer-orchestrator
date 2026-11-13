@@ -46,7 +46,7 @@ from ceo.execute import Executor, TaskSpec
 from ceo.gates import Engineer
 from ceo.ledger import ledger_path, open_ledger, record_event
 from ceo.notify import Channel, ChannelError, channel_from_env, notify
-from ceo.questions import ask_gate, poll_once
+from ceo.questions import ask_gate, delivered, poll_once, resend
 from ceo.sync import SyncError, sync_change
 from ceo.tasks import load_tasks
 from ceo.validate import load_ceo_entries
@@ -220,13 +220,19 @@ class Orchestrator:
         self.log.append(f"{plan['change']}: all {len(statuses)} tasks completed")
 
     def _ask_once(self, gate_id: int, summary: str) -> None:
-        asked = self.conn.execute("SELECT 1 FROM questions WHERE gate_id = ?", (gate_id,)).fetchone()
-        if asked or self.channel is None:
+        """Ask about a gate until the question has been delivered once."""
+        if self.channel is None:
             return
+        question = self.conn.execute(
+            "SELECT id FROM questions WHERE gate_id = ? ORDER BY id DESC LIMIT 1", (gate_id,)
+        ).fetchone()
         try:
-            ask_gate(self.conn, self.channel, gate_id, summary)
+            if question is None:
+                ask_gate(self.conn, self.channel, gate_id, summary)
+            elif not delivered(self.conn, question[0]):
+                resend(self.conn, self.channel, question[0])  # same Q<n>; the send failed before
         except ChannelError:
-            pass
+            pass  # recorded as notify.failed; tried again next cycle
 
     def _alert(self, text: str) -> None:
         """Send a budget alert. A ChannelError propagates on purpose: check_budget
