@@ -83,8 +83,8 @@ class Executor:
                 "SELECT attempts FROM tasks WHERE plan_id = ? AND id = ?", (plan["id"], task.id)
             ).fetchone()[0]
             run_id = conn.execute(
-                "INSERT INTO runs (plan_id, task_id, worker, model) VALUES (?, ?, ?, ?)",
-                (plan["id"], task.id, worker.name, model),
+                "INSERT INTO runs (plan_id, task_id, worker, model, check_command) VALUES (?, ?, ?, ?, ?)",
+                (plan["id"], task.id, worker.name, model, task.check),
             ).lastrowid
             append_event(conn, "task.started", plan_id=plan["id"], task_id=task.id,
                          detail={"run": run_id, "attempt": attempt, "model": model})

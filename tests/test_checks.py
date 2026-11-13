@@ -363,3 +363,43 @@ def test_cost_is_recorded_even_if_a_later_step_fails(setup, monkeypatch):
     reason = setup["conn"].execute(
         "SELECT json_extract(detail, '$.reason') FROM events WHERE kind = 'task.attempt_failed'").fetchone()[0]
     assert "disk full" in reason
+
+
+# git errors are failures, never "no" (CodeRabbit review on #15)
+
+
+def test_git_errors_raise_instead_of_answering_no(setup):
+    from ceo.workspace import WorkspaceError, branch_tip, is_ancestor
+
+    repo = setup["repo"]
+    assert branch_tip(repo, "no/such/branch") is None          # a genuine "no"
+    assert is_ancestor(repo, plan(setup)["approved_sha"], plan(setup)["approved_sha"])
+    with pytest.raises(WorkspaceError):
+        is_ancestor(repo, "f" * 40, plan(setup)["approved_sha"])  # unknown object: exit 128
+    with pytest.raises(WorkspaceError):
+        branch_tip(setup["tmp"] / "not-a-repo", "main")
+
+
+def test_a_broken_repo_never_resets_the_integration_branch(setup, monkeypatch):
+    import ceo.execute
+    from ceo.workspace import WorkspaceError
+
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
+    ex.run_task(plan(setup), TASK)
+    tip = git(setup["repo"], "rev-parse", "ceo/demo/integration")
+
+    def broken(*args, **kwargs):
+        raise WorkspaceError("git merge-base failed: fatal: bad object")
+
+    monkeypatch.setattr(ceo.execute, "is_ancestor", broken)
+    setup["conn"].execute("UPDATE tasks SET status = 'pending'")
+    setup["conn"].commit()
+    with pytest.raises(WorkspaceError):
+        ex.run_task(plan(setup), TASK)
+    assert git(setup["repo"], "rev-parse", "ceo/demo/integration") == tip  # not reset
+
+
+def test_each_run_records_the_check_it_ran(setup):
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
+    ex.run_task(plan(setup), TASK)
+    assert setup["conn"].execute("SELECT check_command FROM runs").fetchone()[0] == TASK.check

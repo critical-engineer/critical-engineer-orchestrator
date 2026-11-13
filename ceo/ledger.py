@@ -160,6 +160,8 @@ _MIGRATIONS = {
         # Checks and evidence (T10, D12): which model ran each attempt, so a
         # task's path, retries and escalations can be rebuilt from the ledger.
         "ALTER TABLE runs ADD COLUMN model TEXT",
+        # The check that judged the attempt, as run: evidence must name it (D8).
+        "ALTER TABLE runs ADD COLUMN check_command TEXT",
     ],
 }
 

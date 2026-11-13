@@ -109,20 +109,23 @@ def commit_result(repo: Path, base: str, worker_dir: Path, *, branch: str, messa
             _git(repo, "worktree", "remove", "--force", str(tree))
 
 
+def _git_answer(repo: Path, *args: str) -> subprocess.CompletedProcess:
+    """Run a git query whose exit code 1 means "no". Any other failure raises:
+    a broken repo must never be mistaken for a negative answer, since callers
+    reset branches on "no"."""
+    result = subprocess.run(["git", *_GIT_SAFE, "-C", str(repo), *args], capture_output=True, timeout=60)
+    if result.returncode not in (0, 1):
+        raise WorkspaceError(f"git {args[0]} failed: {result.stderr.decode(errors='replace').strip()}")
+    return result
+
+
 def branch_tip(repo: Path, branch: str) -> str | None:
-    result = subprocess.run(
-        ["git", *_GIT_SAFE, "-C", str(repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"],
-        capture_output=True, timeout=60,
-    )
+    result = _git_answer(repo, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
     return result.stdout.decode().strip() if result.returncode == 0 else None
 
 
 def is_ancestor(repo: Path, ancestor: str, commit: str) -> bool:
-    result = subprocess.run(
-        ["git", *_GIT_SAFE, "-C", str(repo), "merge-base", "--is-ancestor", ancestor, commit],
-        capture_output=True, timeout=60,
-    )
-    return result.returncode == 0
+    return _git_answer(repo, "merge-base", "--is-ancestor", ancestor, commit).returncode == 0
 
 
 def set_branch(repo: Path, branch: str, commit: str) -> None:
