@@ -269,3 +269,30 @@ def test_hooks_in_ceos_own_repo_never_run(repo, tmp_path):
     (work / "x.txt").write_text("x\n")
     assert commit_result(repo, base, work, branch="ceo/plan/1.1", message="x")
     assert not marker.exists()
+
+
+def test_timeout_returns_even_if_group_signals_cannot_reach_the_worker(tmp_path):
+    # Under sudo, CEO's signals reach only sudo; the worker's processes die
+    # only through the worker-user cleanup. Simulate that: group signals do
+    # nothing, cleanup kills. A process that ignores TERM and holds the
+    # output pipe must not hang the run.
+    import threading
+
+    class SudoLike(Sandbox):
+        def _kill_group(self, pgid, sig):
+            pass  # CEO can't signal the worker's processes
+
+        def _clean_up(self, pgid):
+            try:
+                os.killpg(pgid, 9)  # what `pkill -KILL -u ceo-worker` achieves
+            except ProcessLookupError:
+                pass
+
+    result = {}
+    sandbox = SudoLike(user=None)
+    thread = threading.Thread(target=lambda: result.update(
+        r=sandbox.run(["sh", "-c", "trap '' TERM; sleep 60"], cwd=tmp_path, timeout=0.5)), daemon=True)
+    thread.start()
+    thread.join(timeout=30)
+    assert not thread.is_alive(), "Sandbox.run hung after the timeout"
+    assert result["r"].returncode == 124

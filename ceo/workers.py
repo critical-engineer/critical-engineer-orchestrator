@@ -65,7 +65,20 @@ class Sandbox:
                 stdout, stderr = process.communicate(timeout=5)
             except subprocess.TimeoutExpired:
                 self._kill_group(process.pid, signal.SIGKILL)
-                stdout, stderr = process.communicate()
+                # As CEO, SIGKILL reaches only sudo: the worker's own processes
+                # can only be killed as the worker user. Do that *before* the
+                # last read, or a process holding the output pipe blocks it.
+                self._clean_up(process.pid)
+                try:
+                    stdout, stderr = process.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    # Something still holds the pipes: stop reading and give up
+                    # on the output rather than block the orchestrator.
+                    process.kill()
+                    for pipe in (process.stdout, process.stderr):
+                        if pipe is not None:
+                            pipe.close()
+                    stdout, stderr = "", "output lost: a process kept the output open"
             code, stderr = 124, (stderr or "") + f"\ntimed out after {timeout}s"
         finally:
             self._clean_up(process.pid)
