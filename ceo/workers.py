@@ -49,7 +49,9 @@ class Sandbox:
             # so tools like a user-installed opencode are still found.
             inherited = (os.environ if env is None else env).get("PATH", "/usr/bin:/bin")
             rest = "/usr/local/bin:/usr/bin:/bin" if self.user else inherited
-            argv = ["env", f"PATH={self.path}:{rest}", *argv]
+            # An absolute launcher: Popen looks the program up in the current
+            # environment, which an explicit env's PATH may not cover.
+            argv = ["/usr/bin/env", f"PATH={self.path}:{rest}", *argv]
         if not self.user:
             return list(argv)
         # -n: never prompt; the sudoers rule allows exactly this (D5).
