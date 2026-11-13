@@ -47,6 +47,7 @@ unless loopback, no redirects).
 | F6 | The pull request's description misleads the engineer | D2; tests in 1.1 check it against the ledger |
 | F7 | A redirect sends the token to another host | C5 |
 | F8 | The push succeeds but the pull request call fails, and the retry's push is rejected | D5 |
+| F9 | CEO stops after a push but before recording it, so its lease target is stale | D5 |
 
 ## Decisions
 
@@ -54,11 +55,11 @@ unless loopback, no redirects).
   Rejected: GitHub calls written into the loop (the engineer asked for a design that can serve non-GitHub hosts); a plugin system with entry points (more than the POC needs).
 - D2. The pull request's description is built only from the ledger: the approved commit, each task's commit, check (`runs.check_command`) and exit code, model and cost, and every gate with its decision, decider and route. Nothing the worker wrote goes into it.
   Rejected: letting a worker write the description (unchecked claims, in exactly the place the engineer judges from).
-- D3. Publishing is its own step in the loop for every completed plan, with its own record per approved commit: `publish.done` (with the approved commit and URL) once, or `publish.failed` with the error (token removed). It is checked independently of the completion announcement, so a failed publish is retried every cycle until it succeeds; it never fails the plan or stops other plans.
+- D3. Publishing is its own step in the loop for every completed plan, with its own record per approved commit: `publish.done` (with the approved commit and URL) once, only when a real publisher published; `publish.skipped` when the `none` publisher is configured, which doesn't stop a publisher configured later; or `publish.failed` with the error (token removed). It is checked independently of the completion announcement, so a failed publish is retried every cycle until it succeeds; it never fails the plan or stops other plans.
   Rejected: publishing from the executor after each task (partial results and many pushes).
 - D4. `git push` over HTTPS with credentials supplied by a small `GIT_ASKPASS` helper that prints the token from an environment variable set only for that git process; the remote URL carries no credentials, and `GIT_TERMINAL_PROMPT=0` stops git from prompting.
   Rejected: the token in the URL (stored in git configuration, echoed in errors); `http.extraHeader` on the command line (visible in the process list); a credential store file (the token at rest in a second place).
-- D5. After every successful push CEO records `publish.pushed` (branch and commit). The integration branch is pushed with `--force-with-lease` against the commit CEO last pushed (from those records), or against "the branch must not exist" the first time: a re-approved plan can be republished, a retry after a failed pull request call isn't rejected (F8), and work someone else pushed to that branch is never overwritten.
+- D5. After every successful push CEO records `publish.pushed` (branch and commit). The integration branch is pushed with `--force-with-lease` against the commit CEO last pushed (from those records), or against "the branch must not exist" the first time: a re-approved plan can be republished, a retry after a failed pull request call isn't rejected (F8), and work someone else pushed to that branch is never overwritten. Before pushing, CEO reads the remote branch's tip: if it already is the commit CEO is about to push (the push succeeded but CEO stopped before recording it), CEO records `publish.pushed` and skips the push; if it is a commit CEO never recorded as pushed, CEO doesn't push, and records `publish.failed` asking the engineer to look, rather than adopting or overwriting it (F9).
   Rejected: a plain force push (could overwrite other work); never forcing (a plan re-approved at a new commit could not be republished).
 
 ## Risks / Trade-offs
