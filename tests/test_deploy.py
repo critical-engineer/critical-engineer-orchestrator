@@ -40,9 +40,23 @@ def test_firewall_denies_the_worker_loopback_by_default_and_the_home_network():
     allowed = " ".join(line for line in loopback if line.endswith("accept"))
     assert "th dport 53 accept" in allowed and "th dport 32768-60999 accept" in allowed
     assert "9922" not in allowed and "8096" not in allowed
-    for cidr in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "fc00::/7", "fe80::/10"):
-        assert cidr in nft
+    # Each private-network rule rejects exactly the expected ranges.
+    private = {line for line in worker_rules if "daddr {" in line}
+    assert private == {
+        'meta skuid "ceo-worker" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } counter reject',
+        'meta skuid "ceo-worker" ip6 daddr { fc00::/7, fe80::/10 } counter reject',
+    }
     assert "policy accept" in nft  # only the worker's traffic is filtered
+
+
+def test_setup_keeps_ceo_stopped_until_the_sandbox_checks_pass():
+    script = SCRIPT.read_text()
+    stop = script.index("systemctl stop ceo.service")
+    checks = script.index('say "checking the sandbox from the worker\'s side"')
+    cleanup = script.index("pkill -KILL -u ceo-worker")
+    start = script.index("systemctl start ceo.service")
+    assert stop < checks < cleanup < start
+    assert "systemctl restart ceo.service" not in script
 
 
 def test_setup_script_checks_before_installing_and_verifies_after():
