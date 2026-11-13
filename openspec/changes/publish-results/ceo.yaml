@@ -26,5 +26,5 @@ tasks:
     blast_radius: low
     check: >-
       grep -q CEO_PUBLISHER docs/hosting.md && grep -q CEO_GITHUB_PUSH_TOKEN docs/hosting.md &&
-      grep -q CEO_PUBLISHER scripts/setup-box.sh && grep -q CEO_GITHUB_PUSH_TOKEN scripts/setup-box.sh &&
+      grep -q 'CEO_PUBLISHER=none' scripts/setup-box.sh && grep -q CEO_GITHUB_PUSH_TOKEN scripts/setup-box.sh &&
       python -m pytest tests/test_deploy.py -q

@@ -14,4 +14,4 @@
 
 ## 4. Settings and docs
 
-- [ ] 4.1 Document CEO_PUBLISHER, CEO_GITHUB_PUSH_TOKEN and CEO_GITHUB_BOT in docs/hosting.md (including the exact token permissions: this repository only, contents and pull requests read/write) and add them, empty, to the settings file that scripts/setup-box.sh writes
+- [ ] 4.1 Document CEO_PUBLISHER, CEO_GITHUB_PUSH_TOKEN and CEO_GITHUB_BOT in docs/hosting.md (including the exact token permissions: this repository only, contents and pull requests read/write) and add them to the settings file that scripts/setup-box.sh writes, with CEO_PUBLISHER=none (the default, D1) and the token and bot login empty
