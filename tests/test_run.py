@@ -274,3 +274,40 @@ def test_a_failed_completion_announcement_is_retried(world):
     orch.channel = orch.executor.channel = world["chat"]
     assert "greet: all 2 tasks completed" in orch.cycle()
     assert conn.execute("SELECT count(*) FROM events WHERE kind = 'plan.completed'").fetchone()[0] == 1
+
+
+# review round 2 (CodeRabbit on #16, and on the plan in #18)
+
+
+def test_completion_is_handled_even_at_the_budget_cap(world):
+    orch, conn = world["orch"], world["conn"]
+    orch.cycle()
+    orch.cycle()                      # both tasks done
+    conn.execute("UPDATE runs SET cost_usd = 25.0")
+    conn.commit()                     # the last task took spend past the cap
+    assert "greet: all 2 tasks completed" in orch.cycle()
+
+
+def test_a_budget_alert_that_fails_to_send_is_retried(world):
+    from ceo.notify import ChannelError
+
+    orch, conn = world["orch"], world["conn"]
+    other = conn.execute("INSERT INTO plans (repo, change) VALUES ('x', 'y')").lastrowid
+    conn.execute("INSERT INTO tasks (plan_id, id) VALUES (?, '1.1')", (other,))
+    conn.execute("INSERT INTO runs (plan_id, task_id, worker, cost_usd) VALUES (?, '1.1', 'w', 19.0)", (other,))
+    conn.commit()                     # 95% of the budget spent
+
+    class DownChat(Chat):
+        def send(self, message):
+            if "monthly budget" in message:
+                raise ChannelError("chat is down")
+            super().send(message)
+
+    orch.channel = orch.executor.channel = DownChat()
+    orch.cycle()
+    delivered = conn.execute("SELECT count(*) FROM events WHERE kind = 'budget.alert'"
+                             " AND json_extract(detail, '$.delivered') = 1").fetchone()[0]
+    assert delivered == 0
+    orch.channel = orch.executor.channel = world["chat"]
+    orch.cycle()
+    assert any("passed 80% of the $20.00 monthly budget" in m for m in world["chat"].sent)
