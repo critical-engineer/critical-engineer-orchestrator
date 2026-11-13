@@ -7,7 +7,8 @@ Before=ceo.service
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/nft -f /etc/ceo/ceo-worker.nft
-ExecStop=/usr/sbin/nft delete table inet ceo_worker
+# "-": stopping is fine if the table is already gone.
+ExecStop=-/usr/sbin/nft delete table inet ceo_worker
 
 [Install]
 WantedBy=multi-user.target

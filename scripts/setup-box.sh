@@ -150,10 +150,17 @@ expect_exit 1 "worker has no sudo"                      as_worker sudo -n true
 if id -nG ceo-worker | grep -qwE "docker|sudo|adm|lxd"; then bad "worker is in a privileged group"; else ok "worker isn't in docker/sudo/adm/lxd"; fi
 expect_exit 0 "ceo can run as the worker"               runuser -u ceo -- sudo -n -u ceo-worker true
 # The cleanup CEO runs after every task (Sandbox._clean_up): nothing survives it.
-runuser -u ceo -- sudo -n -u ceo-worker -- bash -c 'nohup sleep 300 >/dev/null 2>&1 &' || true
-runuser -u ceo -- sudo -n -u ceo-worker -- pkill -KILL -u ceo-worker || true
-sleep 1
-expect_exit 1 "no worker process survives CEO's cleanup" pgrep -u ceo-worker
+# Start a known process first and check it by PID, so the check can't pass
+# because the process never started.
+probe=$(runuser -u ceo -- sudo -n -u ceo-worker -- bash -c 'nohup sleep 300 >/dev/null 2>&1 & echo $!' 2>/dev/null || true)
+if [ -n "$probe" ] && kill -0 "$probe" 2>/dev/null; then
+  runuser -u ceo -- sudo -n -u ceo-worker -- pkill -KILL -u ceo-worker || true
+  sleep 1
+  if kill -0 "$probe" 2>/dev/null; then bad "a worker process survived CEO's cleanup (pid $probe)"
+  else ok "no worker process survives CEO's cleanup"; fi
+else
+  bad "couldn't start a test process as the worker, so CEO's cleanup is untested"
+fi
 # Network: curl exit 7 means "couldn't connect" (refused or rejected), so a
 # typo, a missing curl or a failed account switch can't pass these.
 expect_exit 0 "worker can reach the internet"           as_worker curl -s -m 10 -o /dev/null https://opencode.ai/
