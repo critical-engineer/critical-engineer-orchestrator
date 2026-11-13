@@ -311,3 +311,74 @@ def test_a_budget_alert_that_fails_to_send_is_retried(world):
     orch.channel = orch.executor.channel = world["chat"]
     orch.cycle()
     assert any("passed 80% of the $20.00 monthly budget" in m for m in world["chat"].sent)
+
+
+# review round 3 (CodeRabbit on #16)
+
+
+def test_only_one_orchestrator_per_ledger(tmp_path):
+    from ceo.run import acquire_lock
+
+    ledger = tmp_path / "ledger.db"
+    first = acquire_lock(ledger)
+    try:
+        with pytest.raises(SystemExit, match="another orchestrator is running"):
+            acquire_lock(ledger)
+    finally:
+        first.close()
+    acquire_lock(ledger).close()  # free again once the first one is gone
+
+
+def test_second_orchestrator_process_refuses_to_start(tmp_path):
+    import os
+    import subprocess
+    import sys
+
+    from ceo.run import acquire_lock
+
+    ledger = tmp_path / "ledger.db"
+    held = acquire_lock(ledger)
+    try:
+        env = {**os.environ, "CEO_LEDGER": str(ledger), "CEO_PLAN_REPO": "o/r",
+               "CEO_PLAN_REPO_DIR": str(tmp_path), "CEO_WORK_ROOT": str(tmp_path)}
+        result = subprocess.run([sys.executable, "-m", "ceo.run", "once"], env=env,
+                                capture_output=True, text=True, timeout=60)
+        assert result.returncode != 0 and "another orchestrator is running" in result.stderr
+    finally:
+        held.close()
+
+
+def test_budget_alerts_go_out_even_when_no_task_is_ready(world):
+    orch, conn = world["orch"], world["conn"]
+    orch.cycle()
+    orch.cycle()
+    orch.cycle()                                   # plan completed; nothing ready from now on
+    conn.execute("UPDATE runs SET cost_usd = 17.0")
+    conn.commit()                                  # the last task crossed 80%
+    orch.cycle()
+    assert any("passed 80% of the $20.00 monthly budget" in m for m in world["chat"].sent)
+
+
+def test_re_approval_reruns_completed_tasks_in_the_loop(world):
+    orch, conn, work = world["orch"], world["conn"], world["work"]
+    orch.cycle()
+    orch.cycle()                                   # 1.1 and 1.2 completed
+    # The engineer changes the plan (README only, so no task definition changes)
+    # and merges it: approved again at a commit the branch isn't built on.
+    git(work, "checkout", "-q", "-b", "tweak", "main")
+    (work / "openspec" / "changes" / "greet" / "proposal.md").write_text("# tweak\n")
+    git(work, "add", "-A")
+    git(work, "commit", "-q", "-m", "tweak plan")
+    git(work, "checkout", "-q", "main")
+    git(work, "merge", "-q", "--no-ff", "-m", "Merge tweak", "tweak")
+    git(work, "push", "-q", "origin", "main")
+    merge = git(work, "rev-parse", "HEAD")
+    world["api"].routes[("GET", f"/repos/{REPO}/commits/")] = (200, [
+        {"number": 3, "merged_at": "t", "merge_commit_sha": merge, "base": {"ref": "main"}}])
+    world["api"].routes[("GET", f"/repos/{REPO}/pulls/3")] = (200, {"merged_by": {"login": "driessamyn"}})
+    log = orch.cycle()
+    assert "greet: re-approved; completed tasks will run again" in log
+    assert "greet: task 1.1 -> completed" in log
+    assert "greet: task 1.2 -> completed" in orch.cycle()
+    tip = git(world["ceo"], "rev-parse", "ceo/greet/integration")
+    assert git(world["ceo"], "merge-base", "--is-ancestor", merge, tip) == ""  # built on the new plan

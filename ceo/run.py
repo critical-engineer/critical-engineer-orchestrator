@@ -29,6 +29,7 @@ Configuration (environment, usually from the settings file):
   python -m ceo.run loop   cycles until stopped (SIGTERM / Ctrl-C finish the cycle first)
 """
 
+import fcntl
 import os
 import signal
 import sqlite3
@@ -137,14 +138,21 @@ class Orchestrator:
         for line in self.executor.resolve_gates(plan, specs):
             self.log.append(f"{change}: applied {line}")
 
+        # A re-approval the integration branch isn't built on sends completed
+        # tasks back to run again; do that before choosing what's ready.
+        if self.executor.ensure_integration(plan):
+            self.log.append(f"{change}: re-approved; completed tasks will run again")
+
+        # Every cycle, so threshold alerts go out even when nothing is ready;
+        # it only stops dispatch.
+        budget = check_budget(self.conn, self.budget_usd, alert=self._alert)
+
         task_id = self._next_ready(plan_id, deps)
         if task_id is None:
             # Completion costs nothing, so it's handled even at the budget cap:
             # the last task can be the one that reaches it.
             self._maybe_completed(plan, specs)
             return
-
-        budget = check_budget(self.conn, self.budget_usd, alert=self._alert)
         if not budget.allowed:
             self.log.append(f"{change}: budget reached (${budget.spent_usd:.2f} of ${budget.cap_usd:.2f})")
             return
@@ -262,10 +270,26 @@ def from_env(env: dict[str, str] | None = None) -> Orchestrator:
     )
 
 
+def acquire_lock(ledger: Path):
+    """One orchestrator per ledger. Returns the open lock file; keep it open.
+
+    A second orchestrator (e.g. `once` while `loop` runs) would see the first
+    one's running task as interrupted and dispatch it again, so it refuses.
+    """
+    lock = open(f"{ledger}.lock", "a")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.close()
+        raise SystemExit(f"another orchestrator is running on {ledger}") from None
+    return lock
+
+
 def main(argv: list[str]) -> int:
     if argv not in (["once"], ["loop"]):
         print("usage: python -m ceo.run once|loop", file=sys.stderr)
         return 2
+    lock = acquire_lock(ledger_path())  # held until the process exits  # noqa: F841
     orchestrator = from_env()
     if argv == ["once"]:
         for line in orchestrator.cycle():
