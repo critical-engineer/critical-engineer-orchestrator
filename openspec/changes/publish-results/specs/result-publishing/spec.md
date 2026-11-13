@@ -17,6 +17,11 @@ When every task of an approved plan is completed, CEO SHALL push the task branch
 - **WHEN** a plan has already been published for its current approved version
 - **THEN** a later cycle does not push or open anything again
 
+#### Scenario: Publishing failed
+- **WHEN** publishing a completed plan fails, whether the push or the pull request call
+- **THEN** a later cycle tries again, even though the plan's completion was already announced
+- **AND** a push that already succeeded is not rejected when it's retried
+
 #### Scenario: Pull request already exists
 - **WHEN** a pull request from `ceo/<change>/integration` already exists
 - **THEN** CEO updates its branch and description instead of opening a second one
@@ -47,6 +52,10 @@ The publishing token SHALL never appear in a command line, a URL, git configurat
 #### Scenario: Errors
 - **WHEN** a push or an API call fails
 - **THEN** the recorded error and any chat message do not contain the token
+
+#### Scenario: Workers not isolated
+- **WHEN** the GitHub publisher is configured but workers don't run as a separate user
+- **THEN** CEO refuses to start with a clear error, because a worker running as CEO could read the token
 
 ### Requirement: Pluggable publisher
 Publishing SHALL go through one interface, chosen by configuration, with "none" (keep results on the box) as a valid choice.
