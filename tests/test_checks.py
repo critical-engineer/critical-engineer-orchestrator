@@ -483,3 +483,39 @@ def test_reapplying_a_gate_after_a_crash_does_not_duplicate_its_successor(setup)
         finally:
             ex._after_gate = None
     assert [g["kind"] for g in gates(setup)] == ["unsanctioned_assumption", "high_radius"]
+
+
+# review round 4 (CodeRabbit on #15)
+
+
+def test_reset_records_the_reruns_before_moving_the_branch(setup, monkeypatch):
+    # If CEO stops between the two steps, the next call must still find work to do.
+    import ceo.execute
+
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
+    ex.run_task(plan(setup), TASK)
+    reapprove(setup)
+
+    def crash(*args, **kwargs):
+        raise KeyboardInterrupt("power cut")
+
+    monkeypatch.setattr(ceo.execute, "set_branch", crash)
+    with pytest.raises(KeyboardInterrupt):
+        ex.ensure_integration(plan(setup))
+    assert task_row(setup)["status"] == "pending"   # recorded before the branch moved
+    monkeypatch.undo()
+    ex.ensure_integration(plan(setup))               # the branch move is retried
+    assert git(setup["repo"], "rev-parse", "ceo/demo/integration") == plan(setup)["approved_sha"]
+
+
+def test_a_superseded_escalation_does_not_choose_the_model(setup):
+    worker = FakeWorker(files={"hello.txt": "nope\n"})
+    ex = executor(setup, worker, max_attempts=1, escalation_model="openrouter/strong")
+    ex.run_task(plan(setup), TASK)                   # escalation gate
+    decide_gate(setup["conn"], gates(setup)[0]["id"], "approved", route="chat", identity=ME, engineer=ENGINEER)
+    reapprove(setup)                                 # the plan moved on
+    ex.ensure_integration(plan(setup))
+    setup["conn"].execute("UPDATE tasks SET status = 'pending'")
+    setup["conn"].commit()
+    ex.run_task(plan(setup), TASK)
+    assert worker.models_used[-1] == "opencode/free"  # not the superseded escalation's model

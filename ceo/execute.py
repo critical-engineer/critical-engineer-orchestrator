@@ -76,7 +76,7 @@ class Executor:
             # Work this task may depend on was just sent back to run again.
             return "deferred"
         base = branch_tip(self.repo, integration_branch(change))
-        model = self._model_for(plan["id"], task.id)
+        model = self._model_for(plan, task.id)
         worker = dataclasses.replace(self.worker, model=model) if model != self.worker.model else self.worker
         with conn:
             conn.execute(
@@ -180,7 +180,10 @@ class Executor:
                 "SELECT id FROM tasks WHERE plan_id = ? AND status = 'completed' AND tombstoned = 0", (plan["id"],)
             )
         ]
-        set_branch(self.repo, branch, approved)
+        # The ledger first, then the branch: if CEO stops in between, the
+        # branch still isn't built on the approved commit, so the next call
+        # resets it again. The other order could leave completed tasks whose
+        # work is no longer on the branch.
         with self.conn:
             if tip is not None:
                 append_event(self.conn, "integration.reset", plan_id=plan["id"],
@@ -191,6 +194,7 @@ class Executor:
                 )
                 append_event(self.conn, "task.rerun", plan_id=plan["id"], task_id=task_id,
                              detail={"reason": "the integration branch restarted at a new approved commit"})
+        set_branch(self.repo, branch, approved)
         return bool(completed)
 
     def _integrate(self, plan: sqlite3.Row, task: TaskSpec, sha: str) -> bool:
@@ -244,7 +248,7 @@ class Executor:
         if attempts < self.max_attempts:
             self._set_status(plan["id"], task.id, "pending")
             return "retry"
-        current = self._model_for(plan["id"], task.id)
+        current = self._model_for(plan, task.id)
         return self._gate(
             plan, task, "escalation",
             {"task": task.id, "from_model": current, "to_model": self.escalation_model,
@@ -380,15 +384,16 @@ class Executor:
         ).fetchone()
         return row[0] if row else None
 
-    def _model_for(self, plan_id: int, task_id: str) -> str:
-        """The default model, or the stronger one an approved escalation allowed."""
-        row = self.conn.execute(
+    def _model_for(self, plan: sqlite3.Row, task_id: str) -> str:
+        """The default model, or the stronger one an approved escalation allowed
+        for this approved plan and task definition (never a superseded one)."""
+        definition = self._definition_hash(plan["id"], task_id)
+        for row in self.conn.execute(
             "SELECT payload FROM gates WHERE plan_id = ? AND task_id = ? AND kind = 'escalation'"
-            " AND status = 'approved' ORDER BY id DESC LIMIT 1",
-            (plan_id, task_id),
-        ).fetchone()
-        if row:
-            to_model = json.loads(row["payload"]).get("to_model")
-            if to_model:
-                return to_model
+            " AND status = 'approved' ORDER BY id DESC",
+            (plan["id"], task_id),
+        ):
+            payload = json.loads(row["payload"])
+            if payload.get("approved_sha") == plan["approved_sha"] and payload.get("definition_hash") == definition:
+                return payload.get("to_model") or self.worker.model
         return self.worker.model
