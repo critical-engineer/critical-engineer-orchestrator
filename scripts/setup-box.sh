@@ -56,7 +56,15 @@ done
 chmod 0750 /var/lib/ceo /var/lib/ceo-worker
 
 say "directories"
-install -d -o ceo -g ceo-share -m 2770 /srv/ceo /srv/ceo/work
+# /srv/ceo is root's and not writable by the worker group, so a worker can't
+# rename or replace "work" (e.g. with a symlink to /etc) for a later root run
+# of this script to chown/chmod. Only "work" itself is shared.
+install -d -o root -g root -m 0755 /srv/ceo
+if [ -L /srv/ceo/work ]; then
+  echo "/srv/ceo/work is a symlink; refusing to change its owner or mode (remove it and re-run)" >&2
+  exit 1
+fi
+install -d -o ceo -g ceo-share -m 2770 /srv/ceo/work
 install -d -o root -g ceo -m 0750 /etc/ceo
 
 say "CEO code in /opt/ceo ($REF)"

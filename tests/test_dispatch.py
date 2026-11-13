@@ -96,6 +96,11 @@ def test_running_directly_keeps_the_inherited_path_after_the_tool_path(monkeypat
     assert command == ["env", "PATH=/venv/bin:/home/me/.opencode/bin:/usr/bin", "opencode"]
 
 
+def test_running_directly_keeps_an_explicit_environments_path():
+    command = Sandbox(user=None, path="/venv/bin").command(["x"], env={"PATH": "/custom/bin"})
+    assert command == ["env", "PATH=/venv/bin:/custom/bin", "x"]
+
+
 def test_checks_find_tools_on_the_configured_path(tmp_path):
     tool = tmp_path / "bin"
     tool.mkdir()

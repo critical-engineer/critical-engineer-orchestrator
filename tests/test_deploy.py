@@ -49,6 +49,15 @@ def test_firewall_denies_the_worker_loopback_by_default_and_the_home_network():
     assert "policy accept" in nft  # only the worker's traffic is filtered
 
 
+def test_the_shared_work_directory_cant_be_swapped_by_the_worker():
+    script = SCRIPT.read_text()
+    # /srv/ceo itself is root's, so the worker group can't rename or replace "work".
+    assert "install -d -o root -g root -m 0755 /srv/ceo\n" in script
+    assert "-g ceo-share -m 2770 /srv/ceo /srv/ceo/work" not in script
+    # And a symlinked "work" is refused before root changes its owner or mode.
+    assert script.index("[ -L /srv/ceo/work ]") < script.index("install -d -o ceo -g ceo-share -m 2770 /srv/ceo/work")
+
+
 def test_setup_keeps_ceo_stopped_until_the_sandbox_checks_pass():
     script = SCRIPT.read_text()
     stop = script.index("systemctl stop ceo.service")

@@ -42,12 +42,13 @@ class Sandbox:
     # tools such as pytest (from CEO's own venv on the box).
     path: str | None = None
 
-    def command(self, argv: list[str]) -> list[str]:
+    def command(self, argv: list[str], env: dict | None = None) -> list[str]:
         if self.path:
             # Under sudo the environment is reset, so the rest is the system
             # path; running directly (dev, tests), the inherited PATH follows,
             # so tools like a user-installed opencode are still found.
-            rest = "/usr/local/bin:/usr/bin:/bin" if self.user else os.environ.get("PATH", "/usr/bin:/bin")
+            inherited = (os.environ if env is None else env).get("PATH", "/usr/bin:/bin")
+            rest = "/usr/local/bin:/usr/bin:/bin" if self.user else inherited
             argv = ["env", f"PATH={self.path}:{rest}", *argv]
         if not self.user:
             return list(argv)
@@ -69,7 +70,7 @@ class Sandbox:
         Output is read while the command runs, so a command that prints without
         end (``yes``) can't grow CEO's memory: only the tail is kept.
         """
-        command = self.command(argv)
+        command = self.command(argv, env)
         process = subprocess.Popen(
             command,
             cwd=cwd,
