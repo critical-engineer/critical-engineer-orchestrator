@@ -404,3 +404,30 @@ def test_an_undelivered_approval_question_is_sent_again(world):
     assert conn.execute("SELECT count(*) FROM questions").fetchone()[0] == 1
     orch.cycle()
     assert len([m for m in world["chat"].sent if "Approval needed (plan_approval)" in m]) == 1  # once delivered
+
+
+def test_a_task_changed_after_it_ran_gets_a_decision_route(world):
+    orch, conn, work = world["orch"], world["conn"], world["work"]
+    orch.cycle()
+    orch.cycle()                                   # 1.1 and 1.2 completed
+    # The engineer changes task 1.2's definition and merges it.
+    git(work, "checkout", "-q", "-b", "change-1.2", "main")
+    tasks_md = work / "openspec" / "changes" / "greet" / "tasks.md"
+    tasks_md.write_text(tasks_md.read_text().replace("Write bye.txt after hello", "Write bye.txt politely"))
+    git(work, "commit", "-qam", "change 1.2")
+    git(work, "checkout", "-q", "main")
+    git(work, "merge", "-q", "--no-ff", "-m", "Merge change-1.2", "change-1.2")
+    git(work, "push", "-q", "origin", "main")
+    merge = git(work, "rev-parse", "HEAD")
+    world["api"].routes[("GET", f"/repos/{REPO}/commits/")] = (200, [
+        {"number": 4, "merged_at": "t", "merge_commit_sha": merge, "base": {"ref": "main"}}])
+    world["api"].routes[("GET", f"/repos/{REPO}/pulls/4")] = (200, {"merged_by": {"login": "driessamyn"}})
+    log = orch.cycle()
+    assert "greet: task 1.2 is blocked; asked the engineer" in log
+    assert any("Approval needed (stale_evidence)" in m for m in world["chat"].sent)
+    gate = conn.execute("SELECT id FROM gates WHERE kind = 'stale_evidence'").fetchone()[0]
+    orch.cycle()
+    assert conn.execute("SELECT count(*) FROM gates WHERE kind = 'stale_evidence'").fetchone()[0] == 1  # once
+    decide_gate(conn, gate, "approved", route="chat", identity=ME, engineer=ENGINEER)
+    log = orch.cycle()
+    assert "greet: task 1.2 -> completed" in log   # ran again under its new definition
