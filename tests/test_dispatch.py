@@ -90,6 +90,12 @@ def test_sandbox_puts_the_tool_path_first_inside_sudo():
     assert command[8:] == ["python", "-m", "pytest"]
 
 
+def test_running_directly_keeps_the_inherited_path_after_the_tool_path(monkeypatch):
+    monkeypatch.setenv("PATH", "/home/me/.opencode/bin:/usr/bin")
+    command = Sandbox(user=None, path="/venv/bin").command(["opencode"])
+    assert command == ["env", "PATH=/venv/bin:/home/me/.opencode/bin:/usr/bin", "opencode"]
+
+
 def test_checks_find_tools_on_the_configured_path(tmp_path):
     tool = tmp_path / "bin"
     tool.mkdir()

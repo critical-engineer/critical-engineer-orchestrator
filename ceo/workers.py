@@ -44,7 +44,11 @@ class Sandbox:
 
     def command(self, argv: list[str]) -> list[str]:
         if self.path:
-            argv = ["env", f"PATH={self.path}:/usr/local/bin:/usr/bin:/bin", *argv]
+            # Under sudo the environment is reset, so the rest is the system
+            # path; running directly (dev, tests), the inherited PATH follows,
+            # so tools like a user-installed opencode are still found.
+            rest = "/usr/local/bin:/usr/bin:/bin" if self.user else os.environ.get("PATH", "/usr/bin:/bin")
+            argv = ["env", f"PATH={self.path}:{rest}", *argv]
         if not self.user:
             return list(argv)
         # -n: never prompt; the sudoers rule allows exactly this (D5).
