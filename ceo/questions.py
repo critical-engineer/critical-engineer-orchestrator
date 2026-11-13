@@ -75,6 +75,29 @@ def ask(
     return question_id
 
 
+def delivered(conn: sqlite3.Connection, question_id: int) -> bool:
+    """Was this question ever sent successfully?"""
+    return conn.execute(
+        "SELECT 1 FROM events WHERE kind = 'notify.question' AND json_extract(detail, '$.question') = ?",
+        (question_id,),
+    ).fetchone() is not None
+
+
+def resend(conn: sqlite3.Connection, channel: Channel, question_id: int, *, plan: str | None = None) -> None:
+    """Send an existing question again (same Q<n>), e.g. after a failed send."""
+    question = conn.execute("SELECT * FROM questions WHERE id = ?", (question_id,)).fetchone()
+    notify(
+        conn,
+        channel,
+        "question",
+        question["text"],
+        plan_id=question["plan_id"],
+        plan=plan,
+        task_id=question["task_id"],
+        question_id=question_id,
+    )
+
+
 def ask_gate(
     conn: sqlite3.Connection,
     channel: Channel,
