@@ -21,11 +21,34 @@ def test_sudoers_lets_ceo_run_only_as_the_worker():
     assert not any("(ALL" in line or "(root" in line for line in lines)
 
 
+def unit_settings(path: Path) -> dict[str, dict[str, list[str]]]:
+    """Active settings of a systemd unit: {section: {key: [values]}}; comments ignored."""
+    sections: dict[str, dict[str, list[str]]] = {}
+    current = None
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("[") and line.endswith("]"):
+            current = sections.setdefault(line[1:-1], {})
+            continue
+        key, _, value = line.partition("=")
+        current.setdefault(key.strip(), []).append(value.strip())
+    return sections
+
+
 def test_service_runs_as_ceo_without_access_to_home():
-    unit = (DEPLOY / "ceo.service").read_text()
-    assert "\nUser=ceo\n" in unit and "\nProtectHome=yes\n" in unit
-    assert "Requires=ceo-firewall.service" in unit
-    assert "ExecStart=/opt/ceo/.venv/bin/python -m ceo.run loop" in unit
+    unit = unit_settings(DEPLOY / "ceo.service")
+    assert unit["Unit"]["Requires"] == ["ceo-firewall.service"]
+    assert unit["Service"]["User"] == ["ceo"]
+    assert unit["Service"]["ProtectHome"] == ["yes"]
+    assert unit["Service"]["ExecStart"] == ["/opt/ceo/.venv/bin/python -m ceo.run loop"]
+
+
+def test_unit_parser_ignores_commented_settings(tmp_path):
+    unit = tmp_path / "x.service"
+    unit.write_text("[Unit]\n# Requires=ceo-firewall.service\n[Service]\nUser=ceo\n")
+    assert "Requires" not in unit_settings(unit)["Unit"]
 
 
 def test_firewall_denies_the_worker_loopback_by_default_and_the_home_network():
