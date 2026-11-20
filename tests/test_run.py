@@ -460,3 +460,22 @@ def test_an_undelivered_task_gate_question_is_sent_again(world):
     assert sum("Approval needed (high_radius)" in m for m in world["chat"].sent) == 1
     orch.cycle()
     assert sum("Approval needed (high_radius)" in m for m in world["chat"].sent) == 1  # not again
+
+
+def test_a_task_gate_without_a_question_gets_one(world):
+    # A crash between opening a gate and recording its question leaves the
+    # gate open with nothing asked; the next cycle asks.
+    from ceo.gates import open_gate
+
+    orch, conn = world["orch"], world["conn"]
+    orch.cycle()                                   # plan approved, 1.1 completed
+    plan_id = conn.execute("SELECT id FROM plans WHERE change = 'greet'").fetchone()[0]
+    open_gate(conn, plan_id, "high_radius", {"task": "1.2"}, task_id="1.2")
+    conn.execute("UPDATE tasks SET status = 'blocked' WHERE id = '1.2'")
+    conn.commit()
+    log = orch.cycle()
+    assert any(line.startswith("greet: asked Q") for line in log)
+    asks = [m for m in world["chat"].sent if "Approval needed (high_radius)" in m]
+    assert len(asks) == 1 and "task 1.2" in asks[0]
+    orch.cycle()
+    assert sum("Approval needed (high_radius)" in m for m in world["chat"].sent) == 1  # once

@@ -244,6 +244,21 @@ class Orchestrator:
                 self.log.append(f"{plan['change']}: re-sent Q{row[0]}")
             except ChannelError:
                 pass  # recorded as notify.failed; tried again next cycle
+        # A crash between opening a task gate and recording its question (or
+        # no channel at the time) leaves a gate nobody was asked about.
+        unasked = self.conn.execute(
+            "SELECT id, kind, task_id FROM gates g WHERE plan_id = ? AND status = 'open'"
+            " AND task_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM questions WHERE gate_id = g.id)"
+            " ORDER BY id",
+            (plan["id"],),
+        ).fetchall()
+        for gate in unasked:
+            summary = f"{gate['kind']} for task {gate['task_id']} of {plan['change']}"
+            try:
+                question_id = ask_gate(self.conn, self.channel, gate["id"], summary, plan=plan["change"])
+                self.log.append(f"{plan['change']}: asked Q{question_id}")
+            except ChannelError:
+                pass  # the question is recorded; re-sent above next cycle
 
     def _ask_once(self, gate_id: int, summary: str) -> None:
         """Ask about a gate until the question has been delivered once."""
