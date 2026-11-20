@@ -139,6 +139,7 @@ class Orchestrator:
             self.log.append(f"{change}: applied {line}")
         for task_id in self.executor.route_blocked(plan, specs):
             self.log.append(f"{change}: task {task_id} is blocked; asked the engineer")
+        self._redeliver_questions(plan)
 
         # A re-approval the integration branch isn't built on sends completed
         # tasks back to run again; do that before choosing what's ready.
@@ -220,6 +221,29 @@ class Orchestrator:
                 return
         record_event(self.conn, "plan.completed", plan_id=plan["id"], detail={"sha": plan["approved_sha"]})
         self.log.append(f"{plan['change']}: all {len(statuses)} tasks completed")
+
+    def _redeliver_questions(self, plan: sqlite3.Row) -> None:
+        """Re-send the question for any open gate whose question never arrived.
+
+        A gate's question can fail to send (chat down); the gate stays open and
+        would otherwise wait for an engineer who was never asked.
+        """
+        if self.channel is None:
+            return
+        rows = self.conn.execute(
+            "SELECT q.id FROM questions q JOIN gates g ON g.id = q.gate_id"
+            " WHERE g.plan_id = ? AND g.status = 'open' AND q.answer IS NULL"
+            " AND q.id = (SELECT max(id) FROM questions WHERE gate_id = g.id)",
+            (plan["id"],),
+        ).fetchall()
+        for row in rows:
+            if delivered(self.conn, row[0]):
+                continue
+            try:
+                resend(self.conn, self.channel, row[0], plan=plan["change"])
+                self.log.append(f"{plan['change']}: re-sent Q{row[0]}")
+            except ChannelError:
+                pass  # recorded as notify.failed; tried again next cycle
 
     def _ask_once(self, gate_id: int, summary: str) -> None:
         """Ask about a gate until the question has been delivered once."""

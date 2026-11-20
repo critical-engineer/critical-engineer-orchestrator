@@ -431,3 +431,32 @@ def test_a_task_changed_after_it_ran_gets_a_decision_route(world):
     decide_gate(conn, gate, "approved", route="chat", identity=ME, engineer=ENGINEER)
     log = orch.cycle()
     assert "greet: task 1.2 -> completed" in log   # ran again under its new definition
+
+
+def test_an_undelivered_task_gate_question_is_sent_again(world):
+    # A task gate (here: high blast radius) asked while chat was down.
+    from ceo.notify import ChannelError
+
+    orch, conn, work = world["orch"], world["conn"], world["work"]
+    yaml_path = work / "openspec" / "changes" / "greet" / "ceo.yaml"
+    yaml_path.write_text(yaml_path.read_text().replace('"1.1": {depends_on: [], blast_radius: low',
+                                                       '"1.1": {depends_on: [], blast_radius: high'))
+    git(work, "commit", "-qam", "1.1 is high radius")
+    git(work, "push", "-q", "origin", "main")
+    merge = git(work, "rev-parse", "HEAD")
+    world["api"].routes[("GET", f"/repos/{REPO}/commits/")] = (200, [
+        {"number": 5, "merged_at": "t", "merge_commit_sha": merge, "base": {"ref": "main"}}])
+    world["api"].routes[("GET", f"/repos/{REPO}/pulls/5")] = (200, {"merged_by": {"login": "driessamyn"}})
+
+    class DownChat(Chat):
+        def send(self, message):
+            raise ChannelError("chat is down")
+
+    orch.channel = orch.executor.channel = DownChat()
+    assert "greet: task 1.1 -> gate:high_radius" in orch.cycle()
+    orch.channel = orch.executor.channel = world["chat"]
+    log = orch.cycle()
+    assert any(line.startswith("greet: re-sent Q") for line in log)
+    assert sum("Approval needed (high_radius)" in m for m in world["chat"].sent) == 1
+    orch.cycle()
+    assert sum("Approval needed (high_radius)" in m for m in world["chat"].sent) == 1  # not again
