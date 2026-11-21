@@ -455,7 +455,10 @@ def test_a_gate_decided_under_an_older_approval_completes_nothing(setup):
     assert git(setup["repo"], "rev-parse", "--verify", "-q", "ceo/demo/integration") != gates(setup)[0]["payload"]
 
 
-def test_a_gate_decided_under_an_older_task_definition_completes_nothing(setup):
+@pytest.mark.parametrize("decision", ["approved", "denied"])
+def test_a_gate_decided_under_an_older_task_definition_completes_nothing(setup, decision):
+    # The task changed since it ran: whatever was decided about the old run,
+    # the engineer decides again (stale_evidence) before it runs again.
     high = TaskSpec("1.1", "Write hello", "grep -q hello hello.txt", "high")
     setup["conn"].execute("UPDATE tasks SET definition_hash = 'v1'")
     setup["conn"].commit()
@@ -463,9 +466,12 @@ def test_a_gate_decided_under_an_older_task_definition_completes_nothing(setup):
     ex.run_task(plan(setup), high)
     setup["conn"].execute("UPDATE tasks SET definition_hash = 'v2'")   # sync saw a new definition
     setup["conn"].commit()
-    decide_gate(setup["conn"], gates(setup)[0]["id"], "approved", route="chat", identity=ME, engineer=ENGINEER)
-    assert ex.resolve_gates(plan(setup), {"1.1": high}) == ["1.1:high_radius:approved:superseded"]
-    assert task_row(setup)["status"] == "pending"
+    decide_gate(setup["conn"], gates(setup)[0]["id"], decision, route="chat", identity=ME, engineer=ENGINEER,
+                reason="no" if decision == "denied" else None)
+    assert ex.resolve_gates(plan(setup), {"1.1": high}) == [f"1.1:high_radius:{decision}:superseded"]
+    assert task_row(setup)["status"] == "blocked"
+    assert ex.route_blocked(plan(setup), {"1.1": high}) == ["1.1"]
+    assert [g["kind"] for g in gates(setup)] == ["high_radius", "stale_evidence"]
 
 
 def test_reapplying_a_gate_after_a_crash_does_not_duplicate_its_successor(setup):

@@ -329,7 +329,11 @@ class Executor:
         if (payload.get("approved_sha") != plan["approved_sha"]
                 or payload.get("definition_hash") != self._definition_hash(plan["id"], task.id)):
             # Decided for an older plan or task definition: it covers nothing now.
-            self._set_status(plan["id"], task.id, "pending")
+            # A new definition stays blocked: route_blocked asks the engineer
+            # (stale_evidence) before it runs again. A re-approval with the same
+            # definition was itself the engineer's decision, so it runs again.
+            if payload.get("definition_hash") == self._definition_hash(plan["id"], task.id):
+                self._set_status(plan["id"], task.id, "pending")
             record_event(self.conn, "task.gate_superseded", plan_id=plan["id"], task_id=task.id,
                          detail={"gate": gate["id"]})
             return "superseded"
