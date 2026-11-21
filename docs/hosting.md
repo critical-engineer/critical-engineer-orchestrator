@@ -43,8 +43,9 @@ For anything beyond trying it out, install a commit you've reviewed rather than 
 
 ## Known gaps
 
-- `/media/admin/Data_Vault` is world-readable, so the worker can read it (C5 says it shouldn't).
-  The script reports this rather than changing it, since it could affect Jellyfin.
+- Data that is world-readable (e.g. a media library under `/media` or `/mnt`) can be read by the
+  worker, against C5. The script warns about it rather than changing permissions other services
+  may depend on.
 - A local service listening on a port in the ephemeral range (32768-60999) would be reachable
   by the worker. Fixed services on the box listen below it, and setup warns about any
   non-worker listener in that range. Closing this properly means giving each run its own

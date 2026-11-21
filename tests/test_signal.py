@@ -22,8 +22,13 @@ def channel(api):
 
 
 def test_from_env():
-    env = {"CEO_SIGNAL_BOT_NUMBER": BOT, "CEO_SIGNAL_HUMAN_NUMBER": HUMAN}
-    assert SignalChannel.from_env(env) == SignalChannel("http://127.0.0.1:9922", BOT, HUMAN)
+    env = {"CEO_SIGNAL_API_URL": "http://127.0.0.1:8080/", "CEO_SIGNAL_BOT_NUMBER": BOT, "CEO_SIGNAL_HUMAN_NUMBER": HUMAN}
+    assert SignalChannel.from_env(env) == SignalChannel("http://127.0.0.1:8080", BOT, HUMAN)
+
+
+def test_from_env_requires_the_api_url():
+    with pytest.raises(ChannelError, match="CEO_SIGNAL_API_URL"):
+        SignalChannel.from_env({"CEO_SIGNAL_BOT_NUMBER": BOT, "CEO_SIGNAL_HUMAN_NUMBER": HUMAN})
 
 
 def test_from_env_requires_numbers():
@@ -33,7 +38,7 @@ def test_from_env_requires_numbers():
 
 def test_from_env_checks_transport():
     env = {
-        "CEO_SIGNAL_API_URL": "http://192.168.1.10:9922",
+        "CEO_SIGNAL_API_URL": "http://192.0.2.10:8080",
         "CEO_SIGNAL_BOT_NUMBER": BOT,
         "CEO_SIGNAL_HUMAN_NUMBER": HUMAN,
     }

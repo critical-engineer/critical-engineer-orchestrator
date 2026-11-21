@@ -207,7 +207,6 @@ expect_exit 0 "root reaches a test service on 127.0.0.1:18999" curl -s -m 3 -o /
 expect_exit 7 "worker can't reach that local service"     as_worker curl -s -m 3 -o /dev/null http://127.0.0.1:18999/
 kill "$listener" 2>/dev/null || true
 rm -rf "$listen_dir"
-blocked_for_worker "worker can't reach the Signal API (127.0.0.1:9922)" http://127.0.0.1:9922/
 gateway=$(ip route | awk '/^default/ {print $3; exit}')
 if [ -z "$gateway" ]; then
   bad "no default route found; couldn't check the home network"
@@ -227,10 +226,15 @@ if [ -n "$exposed" ]; then
   echo "  WARN non-worker services listen in the ephemeral range the worker may reach: $exposed"
 fi
 
-if runuser -u ceo-worker -- test -r /media/admin/Data_Vault 2>/dev/null; then
-  echo "  WARN worker can read /media/admin/Data_Vault (world-readable). C5 says it shouldn't;"
-  echo "       not changed here because it could affect Jellyfin. Decide, e.g.: chmod o-rx /media/admin/Data_Vault"
-fi
+# Mounted data (media libraries, backups) is often world-readable. C5 says the
+# worker shouldn't read it, but other services may depend on those permissions,
+# so this warns instead of changing them.
+for d in /media/* /media/*/* /mnt/*; do
+  [ -d "$d" ] || continue
+  if runuser -u ceo-worker -- test -r "$d" 2>/dev/null; then
+    echo "  WARN worker can read $d. C5 says it shouldn't; decide, e.g.: chmod o-rx $d"
+  fi
+done
 
 if [ "$fail" -ne 0 ]; then
   echo "Some checks FAILED; see above. ceo.service is left stopped."

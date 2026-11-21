@@ -10,8 +10,8 @@ table inet ceo_worker {
     chain output {
         type filter hook output priority filter; policy accept;
 
-        # Loopback is denied by default: no local service (the Signal API,
-        # Jellyfin, SSH, ...) is reachable, whatever port it listens on.
+        # Loopback is denied by default: no local service (a chat bridge, a
+        # media server, SSH, ...) is reachable, whatever port it listens on.
         # Two exceptions:
         #  - DNS: only to systemd-resolved on 127.0.0.53/54, which forwards
         #    as itself; no other loopback DNS service.

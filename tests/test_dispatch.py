@@ -58,7 +58,7 @@ def test_parse_errors():
     [
         ("Done.\nASSUMPTIONS: none", (True, [])),
         ("Done.\nAssumptions: None.", (True, [])),
-        ("Done.\nASSUMPTIONS:\n- port 8096 is free\n- 2. Jellyfin runs as its own user", (True, ["port 8096 is free", "Jellyfin runs as its own user"])),
+        ("Done.\nASSUMPTIONS:\n- port 8096 is free\n- 2. the service runs as its own user", (True, ["port 8096 is free", "the service runs as its own user"])),
         ("ASSUMPTIONS: none\nlater...\nASSUMPTIONS:\n* the last section counts", (True, ["the last section counts"])),
         ("Done, nothing else to say.", (False, [])),
     ],
