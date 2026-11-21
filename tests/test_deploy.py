@@ -149,13 +149,12 @@ def test_setup_script_checks_before_installing_and_verifies_after():
     assert script.index("nft -c -f") < script.index("/etc/ceo/ceo-worker.nft")
     assert 'id -u)" -eq 0' in script  # refuses to run without root
     assert "set -euo pipefail" in script
-    for check in ("worker can't read CEO's settings", "worker has no sudo", "worker can't reach the Signal API",
+    for check in ("worker can't read CEO's settings", "worker has no sudo", "worker can't reach that local service",
                   "worker can't reach the home network", "worker can't read any home directory",
                   "no worker process survives CEO's cleanup", "can run commands as the worker",
                   "couldn't start a test process as the worker"):
         assert check in script
     # Negative network checks demand curl's "couldn't connect" (7), not just any failure.
-    assert 'blocked_for_worker "worker can\'t reach the Signal API' in script
     assert 'expect_exit 7 "worker can\'t reach that local service"' in script  # against a real listener
     assert '|| got=$?' in script  # failures are reported, not fatal under set -e
     assert 'can\'t read $SEED_ENV' in script

@@ -18,7 +18,7 @@ Nothing in a cycle needs an LLM except the worker itself (key design principle).
 Configuration (environment, usually from the settings file):
   CEO_PLAN_REPO       owner/name of the plan repo on GitHub
   CEO_PLAN_REPO_DIR   CEO's own clone of it
-  CEO_PLANS           comma-separated change names to run, e.g. "media-box" (may be empty)
+  CEO_PLANS           comma-separated change names to run, e.g. "publish-results" (may be empty)
   CEO_WORK_ROOT       where per-task workspaces go (shared with the worker user)
   CEO_INTERVAL        seconds between cycles in `loop` mode (default 60)
   CEO_MAX_ATTEMPTS    attempts before an escalation gate (default 2)
