@@ -11,7 +11,7 @@ from ceo.gates import open_gate
 from ceo.ledger import open_ledger
 
 ROOT = Path(__file__).parent.parent
-SKILL_ID = "skill:dries-laptop"
+SKILL_ID = "skill:my-laptop"
 ACTION = {"action": "merge", "pr": 12, "sha": "abc123"}
 
 
@@ -19,7 +19,7 @@ ACTION = {"action": "merge", "pr": 12, "sha": "abc123"}
 def env(tmp_path):
     ledger = tmp_path / "ledger.db"
     conn = open_ledger(ledger)
-    conn.execute("INSERT INTO plans (repo, change) VALUES ('r', 'media-box')")
+    conn.execute("INSERT INTO plans (repo, change) VALUES ('r', 'demo')")
     conn.execute("INSERT INTO tasks (plan_id, id, status) VALUES (1, '1.1', 'completed')")
     conn.execute("INSERT INTO tasks (plan_id, id) VALUES (1, '1.2')")
     conn.commit()
@@ -55,7 +55,7 @@ def test_status(env):
     code, out = shell(env, "status")
     assert code == 0
     data = json.loads(out)
-    assert data["plans"][0]["change"] == "media-box"
+    assert data["plans"][0]["change"] == "demo"
     assert data["plans"][0]["tasks"] == {"completed": 1, "pending": 1}
     assert (data["open_questions"], data["open_gates"]) == (1, 0)
 
@@ -64,7 +64,7 @@ def test_questions_include_the_exact_gate_payload(env):
     qid, gate_id = ask(env, "Merge?", ACTION)
     code, out = shell(env, "questions")
     [item] = json.loads(out)
-    assert code == 0 and item["question"] == qid and item["plan"] == "media-box"
+    assert code == 0 and item["question"] == qid and item["plan"] == "demo"
     assert item["gate"]["payload"] == ACTION and len(item["gate"]["sha256"]) == 64
 
 
@@ -150,7 +150,7 @@ def test_only_allowlisted_commands_run(env, command):
 def test_command_cannot_claim_another_identity(env):
     qid, _ = ask(env, "Merge?", ACTION)
     # Extra words are just answer text; there is no --identity option to inject.
-    code, out = shell(env, f"answer {qid} approve --identity skill:dries-laptop", identity="skill:intruder")
+    code, out = shell(env, f"answer {qid} approve --identity skill:my-laptop", identity="skill:intruder")
     assert code == 1
     conn = ledger(env)
     assert conn.execute("SELECT status FROM gates").fetchone()[0] == "open"
@@ -217,7 +217,7 @@ def test_answer_text_may_contain_dashes(env):
 def test_questions_identify_repo_and_plan(env):
     ask(env, "Which port?")
     [item] = json.loads(shell(env, "questions")[1])
-    assert (item["plan_id"], item["repo"], item["plan"]) == (1, "r", "media-box")
+    assert (item["plan_id"], item["repo"], item["plan"]) == (1, "r", "demo")
 
 
 def test_answer_event_mirrors_the_gate_deciders_route_and_identity(env):

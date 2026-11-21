@@ -3,7 +3,7 @@
 Needs a phone number registered as the bot's own Signal account (OQ1).
 
 Configuration (environment):
-  CEO_SIGNAL_API_URL       default http://127.0.0.1:9922; must be https unless loopback
+  CEO_SIGNAL_API_URL       the signal-cli-rest-api base URL; must be https unless loopback
   CEO_SIGNAL_BOT_NUMBER    the bot's registered number, e.g. +447700900000
   CEO_SIGNAL_HUMAN_NUMBER  the human's number (the only recipient)
 """
@@ -37,11 +37,11 @@ class SignalChannel:
     @classmethod
     def from_env(cls, env: dict[str, str]) -> "SignalChannel":
         missing = [
-            k for k in ("CEO_SIGNAL_BOT_NUMBER", "CEO_SIGNAL_HUMAN_NUMBER") if not env.get(k)
+            k for k in ("CEO_SIGNAL_API_URL", "CEO_SIGNAL_BOT_NUMBER", "CEO_SIGNAL_HUMAN_NUMBER") if not env.get(k)
         ]
         if missing:
             raise ChannelError(f"not set: {', '.join(missing)}")
-        api_url = env.get("CEO_SIGNAL_API_URL", "http://127.0.0.1:9922").rstrip("/")
+        api_url = env["CEO_SIGNAL_API_URL"].rstrip("/")
         check_transport(api_url, "CEO_SIGNAL_API_URL")
         return cls(api_url, env["CEO_SIGNAL_BOT_NUMBER"], env["CEO_SIGNAL_HUMAN_NUMBER"])
 

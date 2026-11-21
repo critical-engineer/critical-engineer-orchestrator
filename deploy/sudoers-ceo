@@ -1,0 +1,5 @@
+# CEO (D5): the orchestrator may run commands as the worker user, nothing else.
+# The worker user has no sudo rights at all.
+ceo ALL=(ceo-worker) NOPASSWD: ALL
+# Files the worker creates stay group-writable for CEO (shared group ceo-share).
+Defaults>ceo-worker umask=0007, umask_override
