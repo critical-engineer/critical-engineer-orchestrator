@@ -277,6 +277,14 @@ check: python -m pytest tests/test_budget.py
 ```
 Per-run cost in the ledger; monthly cap; pause plus chat alert at 80% and 100%.
 
+### T15: The orchestrator loop
+```yaml
+depends_on: [T5, T7, T10, T12]
+blast_radius: high
+check: python -m pytest tests/test_run.py
+```
+No task covered the loop itself, so it was added here. `python -m ceo.run once|loop`, configured from the settings file. One cycle: tasks left `running` by a crash go back to `pending`; chat answers are read (T7); then for each configured plan: approval is checked (T5) and an open plan gate is asked about once; the approved version is synced (T4); decided gates are applied (T10); the budget is checked (T12); and one ready task (pending, every dependency completed) runs. When all tasks are complete the engineer is told once. A failure in one plan is logged and doesn't stop the others; SIGTERM finishes the current cycle first.
+
 ### Phase 3: dogfood
 Remaining CEO improvements are run through CEO itself. Then the first external plan: media-box (VPN exit → one cycling stream → Data_Vault in Jellyfin).
 

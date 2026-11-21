@@ -167,6 +167,8 @@ def notify(
         kind, summary, plan=plan, task_id=task_id, question_id=question_id
     )
     detail = {"channel": channel.name, "message": message, "summary": summary}
+    if question_id is not None:
+        detail["question"] = question_id  # so delivery of a question can be checked
     try:
         channel.send(message)
     except ChannelError as exc:
