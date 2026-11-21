@@ -28,7 +28,7 @@ For anything beyond trying it out, install a commit you've reviewed rather than 
 | `/opt/ceo` | CEO's code, owned by root: neither user can change it. |
 | `/etc/ceo/env` | Settings (root:ceo 0640), including the Matrix token. |
 | sudoers | `ceo` may run commands as `ceo-worker`; nothing else. |
-| firewall | `ceo-firewall.service` loads the `inet ceo_worker` table. For the worker, loopback is **denied by default** (no local service is reachable, whatever its port) except DNS and the kernel's ephemeral port range, where tests start their own servers; the home network is blocked; the internet stays open (the model API). |
+| firewall | `ceo-firewall.service` loads the `inet ceo_worker` table. For the worker, loopback is **denied by default** (no local service is reachable, whatever its port) except DNS to systemd-resolved (127.0.0.53/54) and the kernel's ephemeral port range, where tests start their own servers; the home network is blocked; the internet stays open (the model API). |
 
 ## After setup
 
@@ -46,4 +46,6 @@ For anything beyond trying it out, install a commit you've reviewed rather than 
 - `/media/admin/Data_Vault` is world-readable, so the worker can read it (C5 says it shouldn't).
   The script reports this rather than changing it, since it could affect Jellyfin.
 - A local service listening on a port in the ephemeral range (32768-60999) would be reachable
-  by the worker. Fixed services on the box listen below it.
+  by the worker. Fixed services on the box listen below it, and setup warns about any
+  non-worker listener in that range. Closing this properly means giving each run its own
+  network namespace, which is beyond the POC.

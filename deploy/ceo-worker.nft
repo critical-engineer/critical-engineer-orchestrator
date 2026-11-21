@@ -13,14 +13,14 @@ table inet ceo_worker {
         # Loopback is denied by default: no local service (the Signal API,
         # Jellyfin, SSH, ...) is reachable, whatever port it listens on.
         # Two exceptions:
-        #  - DNS: the worker resolves names through systemd-resolved on
-        #    127.0.0.53/54, which forwards as itself.
+        #  - DNS: only to systemd-resolved on 127.0.0.53/54, which forwards
+        #    as itself; no other loopback DNS service.
         #  - the kernel's ephemeral port range (net.ipv4.ip_local_port_range,
         #    32768-60999 on the box), where tests and checks put the local
         #    servers they start themselves (e.g. a fake API on 127.0.0.1:0).
         #    Fixed services listen below it. (opencode itself needs no
         #    loopback: measured on the box, it only makes outbound HTTPS.)
-        meta skuid "ceo-worker" oifname "lo" meta l4proto { tcp, udp } th dport 53 accept
+        meta skuid "ceo-worker" oifname "lo" ip daddr { 127.0.0.53, 127.0.0.54 } meta l4proto { tcp, udp } th dport 53 accept
         meta skuid "ceo-worker" oifname "lo" meta l4proto { tcp, udp } th dport 32768-60999 accept
         meta skuid "ceo-worker" oifname "lo" counter reject
 
