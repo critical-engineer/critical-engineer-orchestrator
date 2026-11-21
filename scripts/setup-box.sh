@@ -132,6 +132,10 @@ say "service (stopped while the sandbox is checked)"
 # The checks below kill every worker process; CEO must not be running a task.
 systemctl enable ceo.service
 systemctl stop ceo.service 2>/dev/null || true
+if systemctl is-active --quiet ceo.service; then
+  echo "ceo.service is still running after 'systemctl stop'; not running the checks, which kill worker processes." >&2
+  exit 1
+fi
 
 say "checking the sandbox from the worker's side"
 fail=0
@@ -148,6 +152,25 @@ expect_exit() {  # expect_exit <code> <description> <command...>
   "$@" >/dev/null 2>&1 || got=$?   # `|| got=$?` keeps `set -e` from aborting the script
   if [ "$got" -eq "$want" ]; then ok "$desc"; else bad "$desc (exit $got, expected $want)"; fi
 }
+# blocked_for_worker <description> <url>: the worker gets curl's 7 ("couldn't
+# connect") only means something if root *can* connect, so root goes first.
+# 7 (refused) and 28 (timed out) mean nothing answered for root either.
+blocked_for_worker() {
+  local desc=$1 url=$2 got=0
+  curl -s -k -m 3 -o /dev/null "$url" >/dev/null 2>&1 || got=$?
+  if [ "$got" -eq 7 ] || [ "$got" -eq 28 ]; then
+    echo "  WARN $desc: nothing answers at $url even for root, so this can't be tested here"
+    return 0
+  fi
+  expect_exit 7 "$desc" as_worker curl -s -k -m 3 -o /dev/null "$url"
+}
+# is_worker_probe <pid>: a live (not zombie) `sleep` owned by the worker.
+is_worker_probe() {
+  local info
+  info=$(ps -o user=,stat=,comm= -p "$1" 2>/dev/null) || return 1
+  set -- $info
+  [ "${1:-}" = ceo-worker ] && [ "${2#Z}" = "${2:-}" ] && [ -n "${2:-}" ] && [ "${3:-}" = sleep ]
+}
 
 if as_worker true; then ok "can run commands as the worker"; else bad "can't run commands as the worker"; fi
 expect_exit 0 "worker can read its own home"            as_worker test -r /var/lib/ceo-worker
@@ -162,10 +185,10 @@ expect_exit 0 "ceo can run as the worker"               runuser -u ceo -- sudo -
 # Start a known process first and check it by PID, so the check can't pass
 # because the process never started.
 probe=$(runuser -u ceo -- sudo -n -u ceo-worker -- bash -c 'nohup sleep 300 >/dev/null 2>&1 & echo $!' 2>/dev/null || true)
-if [ -n "$probe" ] && kill -0 "$probe" 2>/dev/null; then
+if [ -n "$probe" ] && is_worker_probe "$probe"; then
   runuser -u ceo -- sudo -n -u ceo-worker -- pkill -KILL -u ceo-worker || true
   sleep 1
-  if kill -0 "$probe" 2>/dev/null; then bad "a worker process survived CEO's cleanup (pid $probe)"
+  if is_worker_probe "$probe"; then bad "a worker process survived CEO's cleanup (pid $probe)"
   else ok "no worker process survives CEO's cleanup"; fi
 else
   bad "couldn't start a test process as the worker, so CEO's cleanup is untested"
@@ -173,14 +196,36 @@ fi
 # Network: curl exit 7 means "couldn't connect" (refused or rejected), so a
 # typo, a missing curl or a failed account switch can't pass these.
 expect_exit 0 "worker can reach the internet"           as_worker curl -s -m 10 -o /dev/null https://opencode.ai/
-expect_exit 7 "worker can't reach the Signal API (127.0.0.1:9922)" as_worker curl -s -m 3 -o /dev/null http://127.0.0.1:9922/
+if nft list table inet ceo_worker >/dev/null 2>&1; then ok "the worker firewall table is loaded"; else bad "the worker firewall table isn't loaded"; fi
+# A local service of our own, on a fixed port below the ephemeral range, so the
+# loopback block is always tested against something that is really listening.
+listen_dir=$(mktemp -d)
+python3 -m http.server 18999 --bind 127.0.0.1 --directory "$listen_dir" >/dev/null 2>&1 &
+listener=$!
+for _ in 1 2 3 4 5 6 7 8 9 10; do curl -s -m 1 -o /dev/null http://127.0.0.1:18999/ && break; sleep 0.5; done
+expect_exit 0 "root reaches a test service on 127.0.0.1:18999" curl -s -m 3 -o /dev/null http://127.0.0.1:18999/
+expect_exit 7 "worker can't reach that local service"     as_worker curl -s -m 3 -o /dev/null http://127.0.0.1:18999/
+kill "$listener" 2>/dev/null || true
+rm -rf "$listen_dir"
+blocked_for_worker "worker can't reach the Signal API (127.0.0.1:9922)" http://127.0.0.1:9922/
 gateway=$(ip route | awk '/^default/ {print $3; exit}')
 if [ -z "$gateway" ]; then
   bad "no default route found; couldn't check the home network"
 else
-  expect_exit 7 "worker can't reach the home network ($gateway)" as_worker curl -s -m 3 -o /dev/null "http://$gateway/"
+  blocked_for_worker "worker can't reach the home network ($gateway, http)"  "http://$gateway/"
+  blocked_for_worker "worker can't reach the home network ($gateway, https)" "https://$gateway/"
 fi
 expect_exit 0 "checks can run pytest as the worker" as_worker env PATH=/opt/ceo/.venv/bin:/usr/bin:/bin python -m pytest --version
+
+# The ephemeral port range stays open on loopback for the servers checks start
+# themselves; anything else listening there is reachable by the worker.
+worker_uid=$(id -u ceo-worker)
+exposed=$(ss -Hltnue 2>/dev/null | awk -v w="uid:$worker_uid" '{
+  n = split($5, a, ":"); p = a[n] + 0
+  if (p >= 32768 && p <= 60999 && index($0, w " ") == 0) print $5 }' | sort -u | tr '\n' ' ')
+if [ -n "$exposed" ]; then
+  echo "  WARN non-worker services listen in the ephemeral range the worker may reach: $exposed"
+fi
 
 if runuser -u ceo-worker -- test -r /media/admin/Data_Vault 2>/dev/null; then
   echo "  WARN worker can read /media/admin/Data_Vault (world-readable). C5 says it shouldn't;"
