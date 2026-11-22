@@ -296,3 +296,30 @@ def test_timeout_returns_even_if_group_signals_cannot_reach_the_worker(tmp_path)
     thread.join(timeout=30)
     assert not thread.is_alive(), "Sandbox.run hung after the timeout"
     assert result["r"].returncode == 124
+
+
+def test_stop_all_kills_the_worker_user_and_confirms(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv[argv.index("--") + 1:])
+        if argv[argv.index("--") + 1] != "pgrep":
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return fake_run.pgrep(argv)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    fake_run.pgrep = lambda argv: subprocess.CompletedProcess(argv, 1, "0\n", "")
+    assert Sandbox(user="w").stop_all() is True
+    assert calls[0] == ["pkill", "-KILL", "-u", "w"] and calls[1] == ["pgrep", "-c", "-u", "w"]
+    fake_run.pgrep = lambda argv: subprocess.CompletedProcess(argv, 0, "2\n", "")
+    assert Sandbox(user="w").stop_all() is False                 # processes left
+    fake_run.pgrep = lambda argv: subprocess.CompletedProcess(argv, 1, "", "sudo: a password is required\n")
+    assert Sandbox(user="w").stop_all() is False                 # sudo refused: exit 1, no count
+
+    def timed_out(argv):
+        raise subprocess.TimeoutExpired(argv, 30)
+
+    fake_run.pgrep = timed_out
+    assert Sandbox(user="w").stop_all() is False                 # unconfirmed, not an exception
+    assert Sandbox(user=None).stop_all() is True  # no worker user: nothing to find

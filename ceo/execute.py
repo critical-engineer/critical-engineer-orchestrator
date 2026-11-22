@@ -288,6 +288,15 @@ class Executor:
                 pass  # recorded as notify.failed; the gate stays open and is listed by the skill
         return f"gate:{kind}"
 
+    def _has_current_gate(self, plan: sqlite3.Row, task_id: str, definition: str | None) -> bool:
+        """Is there a gate for this approved plan and task definition?"""
+        return self.conn.execute(
+            "SELECT 1 FROM gates WHERE plan_id = ? AND task_id = ?"
+            " AND json_extract(payload, '$.approved_sha') = ?"
+            " AND json_extract(payload, '$.definition_hash') IS ?",
+            (plan["id"], task_id, plan["approved_sha"], definition),
+        ).fetchone() is not None
+
     def _notify(self, kind: str, summary: str, plan: sqlite3.Row, task_id: str) -> None:
         if self.channel is None:
             return
@@ -329,7 +338,14 @@ class Executor:
         if (payload.get("approved_sha") != plan["approved_sha"]
                 or payload.get("definition_hash") != self._definition_hash(plan["id"], task.id)):
             # Decided for an older plan or task definition: it covers nothing now.
-            self._set_status(plan["id"], task.id, "pending")
+            # A new definition stays blocked: route_blocked asks the engineer
+            # (stale_evidence) before it runs again. A re-approval with the same
+            # definition was itself the engineer's decision, so it runs again,
+            # unless a current gate exists: then that gate's decision governs.
+            definition = self._definition_hash(plan["id"], task.id)
+            if (payload.get("definition_hash") == definition
+                    and not self._has_current_gate(plan, task.id, definition)):
+                self._set_status(plan["id"], task.id, "pending")
             record_event(self.conn, "task.gate_superseded", plan_id=plan["id"], task_id=task.id,
                          detail={"gate": gate["id"]})
             return "superseded"
@@ -358,7 +374,46 @@ class Executor:
                 self._set_status(plan["id"], task.id, "pending")
                 return "retry"
             return "blocked"
+        if gate["kind"] == "stale_evidence":
+            if approved:  # run it again under its new definition
+                self._set_status(plan["id"], task.id, "pending")
+                return "retry"
+            return "blocked"
         return "ignored"
+
+    def route_blocked(self, plan: sqlite3.Row, tasks: dict[str, TaskSpec]) -> list[str]:
+        """Give every blocked task a decision route.
+
+        A task can be blocked without a gate: sync blocks a task whose
+        definition changed after it ran (or a migrated task that needs review),
+        but opens no gate. Without one nothing could unblock it, and its
+        dependents would wait forever. Any blocked task with no gate for its
+        current approved plan and definition gets a ``stale_evidence`` gate:
+        approve to run it again under the new definition, deny to keep it
+        blocked. Returns the task IDs given a gate.
+        """
+        routed = []
+        definition_of = {
+            r["id"]: r["definition_hash"]
+            for r in self.conn.execute(
+                "SELECT id, definition_hash FROM tasks WHERE plan_id = ? AND status = 'blocked' AND tombstoned = 0",
+                (plan["id"],),
+            )
+        }
+        for task_id, definition in sorted(definition_of.items()):
+            task = tasks.get(task_id)
+            if task is None:
+                continue
+            if self._has_current_gate(plan, task_id, definition):
+                continue
+            self._gate(
+                plan, task, "stale_evidence",
+                {"task": task_id, "reason": "its definition changed after it ran, or it needs review after a migration"},
+                f"Task {task_id} changed after it ran, so its earlier result was for a different definition. "
+                "Approve to run it again under the new definition, or deny with a reason to keep it blocked.",
+            )
+            routed.append(task_id)
+        return routed
 
     def _feedback(self, plan_id: int, task_id: str) -> list[str]:
         """Why earlier attempts weren't accepted: denial reasons and the latest failure."""
