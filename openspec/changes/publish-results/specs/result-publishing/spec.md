@@ -55,8 +55,12 @@ The publishing token SHALL never appear in a command line, a URL, git configurat
 - **THEN** the recorded error and any chat message do not contain the token
 
 #### Scenario: Workers not isolated
-- **WHEN** the GitHub publisher is configured but workers don't run as a separate user
+- **WHEN** the publishing token is in CEO's environment (whichever publisher is selected) or the GitHub publisher is configured, and workers don't run as a separate user with a different UID
 - **THEN** CEO refuses to start with a clear error, because a worker running as CEO could read the token
+
+#### Scenario: No token, no isolation
+- **WHEN** the none publisher is selected, no token is set and workers run as CEO
+- **THEN** CEO starts (a local trial)
 
 ### Requirement: Pluggable publisher
 Publishing SHALL go through one interface, chosen by configuration, with "none" (keep results on the box) as a valid choice.

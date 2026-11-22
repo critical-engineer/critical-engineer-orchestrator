@@ -33,7 +33,7 @@ unless loopback, no redirects).
 - C5. HTTPS only, no redirects followed: all GitHub calls go through `open_url` and `check_transport`.
 - C6. At most one publish per plan per approved commit, recorded in the ledger; a failed publish is retried on a later cycle.
 - C7. The bot that publishes can't clear judgment gates: its login must not be one of the engineer's GitHub logins (already refused by `Engineer.from_env` via `CEO_GITHUB_BOT`).
-- C8. The GitHub publisher can only be used with isolated workers: if `CEO_PUBLISHER` is `github` and `CEO_WORKER_USER` is empty (workers would run as CEO and could read its environment and settings), CEO refuses to start.
+- C8. A token in CEO's environment requires isolated workers, whichever publisher is selected: if `CEO_GITHUB_PUSH_TOKEN` is set (or `CEO_PUBLISHER` is `github`) and `CEO_WORKER_USER` is empty, or names a user with CEO's own UID, CEO refuses to start, since workers and checks would run as CEO and could read its environment and settings. Without a token, the none publisher may run with workers as CEO (a local trial).
 
 ## Failure Modes
 
@@ -47,7 +47,7 @@ unless loopback, no redirects).
 | F6 | The pull request's description misleads the engineer | D2; tests in 1.1 check it against the ledger |
 | F7 | A redirect sends the token to another host | C5 |
 | F8 | The push succeeds but the pull request call fails, and the retry's push is rejected | D5 |
-| F9 | CEO stops after a push but before recording it, so its lease target is stale | D5 |
+| F9 | CEO stops after a push but before recording it, so its lease target is stale, even if the plan is re-approved before CEO recovers | D5 |
 
 ## Decisions
 
@@ -59,7 +59,7 @@ unless loopback, no redirects).
   Rejected: publishing from the executor after each task (partial results and many pushes).
 - D4. `git push` over HTTPS with credentials supplied by a small `GIT_ASKPASS` helper that prints the token from an environment variable set only for that git process; the remote URL carries no credentials, and `GIT_TERMINAL_PROMPT=0` stops git from prompting.
   Rejected: the token in the URL (stored in git configuration, echoed in errors); `http.extraHeader` on the command line (visible in the process list); a credential store file (the token at rest in a second place).
-- D5. After every successful push CEO records `publish.pushed` (branch and commit). The integration branch is pushed with `--force-with-lease` against the commit CEO last pushed (from those records), or against "the branch must not exist" the first time: a re-approved plan can be republished, a retry after a failed pull request call isn't rejected (F8), and work someone else pushed to that branch is never overwritten. Before pushing, CEO reads the remote branch's tip: if it already is the commit CEO is about to push (the push succeeded but CEO stopped before recording it), CEO records `publish.pushed` and skips the push; if it is a commit CEO never recorded as pushed, CEO doesn't push, and records `publish.failed` asking the engineer to look, rather than adopting or overwriting it (F9).
+- D5. After every successful push CEO records `publish.pushed` (branch and commit). The integration branch is pushed with `--force-with-lease` against the commit CEO last pushed (from those records), or against "the branch must not exist" the first time: a re-approved plan can be republished, a retry after a failed pull request call isn't rejected (F8), and work someone else pushed to that branch is never overwritten. Before pushing, CEO reads the remote branch's tip: if it already is the commit CEO is about to push (the push succeeded but CEO stopped before recording it), CEO records `publish.pushed` and skips the push; if it is a commit CEO never recorded as pushed, CEO doesn't push, and records `publish.failed` asking the engineer to look, rather than adopting or overwriting it (F9). Before every push CEO records `publish.intent` (branch and commit): a remote tip matching an intent that has no `publish.pushed` is CEO's own earlier push, so CEO records it as pushed and uses it as the lease target, even when the plan was re-approved in between and CEO now pushes a different commit (F9).
   Rejected: a plain force push (could overwrite other work); never forcing (a plan re-approved at a new commit could not be republished).
 
 ## Risks / Trade-offs
