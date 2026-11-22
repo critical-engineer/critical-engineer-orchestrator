@@ -58,6 +58,7 @@ def test_matrix_is_the_default_channel():
 def test_signal_channel_can_be_selected():
     env = {
         "CEO_CHANNEL": "signal",
+        "CEO_SIGNAL_API_URL": "http://127.0.0.1:8080",
         "CEO_SIGNAL_BOT_NUMBER": "+447700900001",
         "CEO_SIGNAL_HUMAN_NUMBER": "+447700900002",
     }
@@ -70,13 +71,13 @@ def test_unknown_channel():
 
 
 @pytest.mark.parametrize(
-    "url", ["http://127.0.0.1:9922", "http://localhost:8008", "http://[::1]:8008", "https://matrix.example"]
+    "url", ["http://127.0.0.1:8080", "http://localhost:8008", "http://[::1]:8008", "https://matrix.example"]
 )
 def test_transport_allows_https_or_loopback(url):
     check_transport(url, "X")
 
 
-@pytest.mark.parametrize("url", ["http://192.168.1.10:8008", "http://media-box.local", "ftp://127.0.0.1"])
+@pytest.mark.parametrize("url", ["http://192.0.2.10:8008", "http://box.local", "ftp://127.0.0.1"])
 def test_transport_rejects_plain_http_off_the_box(url):
     with pytest.raises(ChannelError, match="X must use https"):
         check_transport(url, "X")

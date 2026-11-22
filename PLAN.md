@@ -76,15 +76,15 @@ Credit: the research → plan → implement workflow and approvals bound to an e
 - Running tasks in parallel. Execution is sequential, on purpose.
 - Multiple users or a web UI.
 - Building our own coding agent. We call existing CLIs.
-- Being general-purpose. The first real user is the media-box project.
+- Being general-purpose. The first real user is the maintainer's own home-server project.
 
 ## 3. Constraints
 
-- C1. Runs on media-box: i5-8500T, 16 GB, Ubuntu 26.04 Desktop, no GPU. All inference goes through remote APIs.
+- C1. Runs on a small home server (Ubuntu, no GPU). All inference goes through remote APIs.
 - C2. Python 3.11+, stdlib plus PyYAML. Every additional dependency needs a recorded decision. Exception (D10): the OpenSpec CLI (Node 22.12+), pinned, called as a subprocess, and relied on only for its file format and `--json` output (D10).
 - C3. Model access through OpenRouter, with a hard credit limit on the key (backstop) and per-run cost tracked in the ledger.
 - C4. Workers never hold the GitHub or chat-channel credentials, and can't write the ledger or the plan.
-- C5. Workers have no sudo, no Docker group membership, no access to `/home/dries` or `/media`, no access to the home network, and no access to the chat channel (its API or credentials).
+- C5. Workers have no sudo, no Docker group membership, no access to users' home directories or other data on the box, no access to the home network, and no access to the chat channel (its API or credentials). Exception: data that is world-readable (e.g. a media library mounted under `/media` or `/mnt`) stays readable by the worker until its permissions change; setup warns about it rather than changing permissions other services may depend on.
 - C6. The approved plan is read-only during execution. Any change goes through a PR and re-approval.
 - C7. The ledger is the only store of execution status. No status is kept in the plan file. Under D10, the `tasks.md` checkboxes are written only by the orchestrator, at archive time, after checks pass. Agents never tick them; an edit to the approved file on `main` counts as a plan change (F3).
 - C8. Every decision a human makes through the chat channel is saved in the ledger. Decisions that change the plan become PRs.
@@ -116,7 +116,7 @@ Credit: the research → plan → implement workflow and approvals bound to an e
 - D3. **Orchestrator = a plain Python loop.** Rejected: LangGraph (extra abstraction that hides the state machine).
 - D4. **Workers = existing CLIs, called headless.** Default `opencode run --format json` (OpenRouter). Optional: `claude -p`, with an API key only, never a subscription (D12).
   Rejected: our own coding agent (not the new part); OpenHands (strong sandbox, but centred on conversations and a heavier setup).
-- D5. **Privilege separation:** orchestrator runs as `ceo`, workers as `ceo-worker` via a single sudoers rule. nftables blocks `ceo-worker` from home-network ranges and from local port 9922.
+- D5. **Privilege separation:** orchestrator runs as `ceo`, workers as `ceo-worker` via a single sudoers rule. nftables blocks `ceo-worker` from home-network ranges and from local services on loopback.
   Rejected: a single user (workers could tamper with the ledger and credentials); a VM (heavier; revisit if workers need Docker).
 - D6. **Human interface:** GitHub for durable artefacts (plan, plan-change PRs, critic reports); a chat channel for notifications and short answers on the phone (D11); the CEO skill in the engineer's coding assistant for deep work at the desk (D13). CEO itself opens no inbound ports: the box only polls outbound. The engineer's existing SSH access to the box is administrative and outside CEO; if the skill uses it (OQ12), it must not widen it (e.g. a restricted key with a forced command).
 - D7. **Elevated actions are ledger requests,** not interactive prompts. They sit as `blocked:needs-approval` until approved.
@@ -249,7 +249,7 @@ The record that proves who cleared which gate, on what evidence (C10). A `gates`
 ```yaml
 depends_on: [T4, T5]
 blast_radius: high
-check: python -m pytest tests/test_dispatch.py && sudo -u ceo-worker test ! -r /home/dries
+check: python -m pytest tests/test_dispatch.py && sudo -u ceo-worker test ! -r /var/lib/ceo
 ```
 `ceo` / `ceo-worker` users, sudoers rule, nftables rules (D5). Calls `opencode run --pure --format json` as ceo-worker in a per-task **export** of the approved commit (files only, no `.git`, so the worker can never point CEO at hooks that run as `ceo`); CEO copies the result back into its own worktree (skipping `.git`, keeping symlinks as links, dropping special files) and commits it with hooks disabled, one commit per task on `ceo/<change>/<task>` (D8). Captures final text, tools used and cost. Worker contract: the final output lists any assumption the plan didn't sanction; each one is a judgment gate (F12).
 
@@ -286,16 +286,16 @@ check: python -m pytest tests/test_run.py
 No task covered the loop itself, so it was added here. `python -m ceo.run once|loop`, configured from the settings file. One cycle: tasks left `running` by a crash go back to `pending`; chat answers are read (T7); then for each configured plan: approval is checked (T5) and an open plan gate is asked about once; the approved version is synced (T4); decided gates are applied (T10); the budget is checked (T12); and one ready task (pending, every dependency completed) runs. When all tasks are complete the engineer is told once. A failure in one plan is logged and doesn't stop the others; SIGTERM finishes the current cycle first.
 
 ### Phase 3: dogfood
-Remaining CEO improvements are run through CEO itself. Then the first external plan: media-box (VPN exit → one cycling stream → Data_Vault in Jellyfin).
+Remaining CEO improvements are run through CEO itself. Then the first external plan: the maintainer's home-server project.
 
 ## 8. Open questions
 
 - OQ1. ~~Bot chat identity~~ Resolved 2026-11-01 by D11: the bot has its own Matrix account (no phone number needed).
-- OQ2. Branch protection / rulesets on a **private** repo: available on the free GitHub plan? (The framework repo is public, so this is fine; the media-box plan repo may be private.)
+- OQ2. Branch protection / rulesets on a **private** repo: available on the free GitHub plan? (The framework repo is public, so this is fine; an external plan repo may be private.)
 - OQ3. ~~Headless permission behaviour~~ Answered 2026-11-06 on the box (opencode 1.19.5): `opencode run` without `--dangerously-skip-permissions` still edits files in `--dir`. CEO doesn't rely on in-app permissions anyway: the worker is contained by its OS user and network rules (G4). Still to confirm: shell-command behaviour headless.
 - OQ4. ~~Signal receive mode~~ Superseded by D11; for Matrix, T7 long-polls `/sync`.
 - OQ5. ~~Per-run cost~~ Answered 2026-11-06: `opencode run --format json` emits `step_finish` events with `cost` (USD) and token counts; a run's cost is their sum. OpenCode's free models report 0.
-- OQ6. Workers that need Docker (media-box phase): rootless Docker for `ceo-worker`, or a VM? Can gluetun run rootless?
+- OQ6. Workers that need Docker: rootless Docker for `ceo-worker`, or a VM?
 - OQ7. Name: "CEO" clashes with Paperclip's CEO agent; is that irony intended?
 - OQ8. ~~Does OpenSpec's JSON output expose task-level detail?~~ Answered by T0: yes (`instructions apply --json`), but task IDs are positional (R4). Still open: is `docs/agent-contract.md` a stable interface for programs?
 - OQ9. ~~Where status lives~~ Resolved with D10: the ledger holds execution status (C7); checkboxes are ticked only by the orchestrator at archive, so the archived change records what was done.

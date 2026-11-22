@@ -10,7 +10,7 @@ from ceo.ledger import open_ledger
 
 ENGINEER = Engineer(chat=frozenset({"@me:x"}), github=frozenset({"driessamyn"}))
 REPO = "critical-engineer/plans"
-CHANGE = "media-box"
+CHANGE = "demo"
 
 
 def git(cwd, *args):

@@ -68,9 +68,9 @@ def reply(conn, text, identity=ME):
 
 
 def test_ask_records_and_sends_with_its_number(conn, channel):
-    qid = ask(conn, channel, 1, "Which port should Jellyfin use?", task_id="1.1")
+    qid = ask(conn, channel, 1, "Which port should the service use?", task_id="1.1")
     assert conn.execute("SELECT text, task_id FROM questions WHERE id = ?", (qid,)).fetchone()[:] == (
-        "Which port should Jellyfin use?", "1.1",
+        "Which port should the service use?", "1.1",
     )
     assert channel.sent[0].endswith(f"Reply: Q{qid} <answer>")
     assert "notify.question" in kinds(conn)
@@ -78,7 +78,7 @@ def test_ask_records_and_sends_with_its_number(conn, channel):
 
 def test_ask_gate_shows_the_exact_action(conn, channel):
     gate_id = open_gate(conn, 1, "elevated_action", ACTION, task_id="1.1")
-    qid = ask_gate(conn, channel, gate_id, "Merge the media-box plan PR")
+    qid = ask_gate(conn, channel, gate_id, "Merge the demo plan PR")
     sent = channel.sent[0]
     assert "Approval needed (elevated_action)" in sent and '"pr": 12' in sent and "sha256 " in sent
     assert conn.execute("SELECT gate_id FROM questions WHERE id = ?", (qid,)).fetchone()[0] == gate_id
@@ -339,6 +339,6 @@ def test_polling_a_send_only_channel_is_a_clear_error(conn):
     from ceo.channels.signal_api import SignalChannel
     from ceo.notify import ChannelError
 
-    signal = SignalChannel("http://127.0.0.1:9922", "+447700900001", "+447700900002")
+    signal = SignalChannel("http://127.0.0.1:8080", "+447700900001", "+447700900002")
     with pytest.raises(ChannelError, match="can't receive answers"):
         poll_once(conn, signal, ENGINEER)
