@@ -71,8 +71,11 @@ def test_firewall_denies_the_worker_loopback_by_default_and_the_home_network():
     private = {line for line in worker_rules if "daddr {" in line and 'oifname "lo"' not in line}
     assert private == {
         'meta skuid "ceo-worker" ip daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16, 100.64.0.0/10 } counter reject',
-        'meta skuid "ceo-worker" ip6 daddr { fc00::/7, fe80::/10 } counter reject',
     }
+    # No IPv6 beyond loopback: a home network can use a global IPv6 prefix.
+    # It comes after the loopback rules, so ::1 still follows those.
+    ipv6 = 'meta skuid "ceo-worker" meta nfproto ipv6 counter reject'
+    assert ipv6 in worker_rules and worker_rules.index(ipv6) > worker_rules.index(loopback[-1])
     assert "policy accept" in nft  # only the worker's traffic is filtered
 
 
@@ -93,6 +96,11 @@ def test_setup_keeps_ceo_stopped_until_the_sandbox_checks_pass():
     start = script.index("systemctl start ceo.service")
     assert stop < checks < cleanup < start
     assert "systemctl restart ceo.service" not in script
+    # Not enabled at boot until every check has passed.
+    disable = script.index("systemctl disable ceo.service")
+    enable = script.index("systemctl enable ceo.service")
+    assert disable < script.index("if ! stop_ceo; then") and checks < enable < start
+    assert script.count("systemctl enable ceo.service") == 1
     # A stop that didn't take aborts before any check can kill a live task.
     guard = script.index("if ! stop_ceo; then")
     assert stop < guard < checks and "exit 1" in script[guard:checks]
@@ -143,6 +151,10 @@ def test_a_network_block_only_passes_when_root_can_connect(tmp_path):
     # Nothing listening at all: not a pass, a warning.
     out = run_helpers(tmp_path / "b", 'blocked_for_worker "blocked" http://x/', {"curl": "exit 7"})
     assert "WARN" in out and "ok" not in out
+    # Extra curl options (e.g. -6) reach both root's control and the worker's attempt.
+    out = run_helpers(tmp_path / "f", 'blocked_for_worker "v6" https://x/ -6',
+                      {"curl": 'case "$*" in *-6*) ;; *) exit 99;; esac; [ -n "${WORKER:-}" ] && exit 7; exit 0'})
+    assert out.strip() == "ok v6"
     # Root's own attempt fails some other way (6: couldn't resolve): not a pass.
     out = run_helpers(tmp_path / "d", 'blocked_for_worker "blocked" http://x/',
                       {"curl": '[ -n "${WORKER:-}" ] && exit 7; exit 6'})
@@ -177,7 +189,7 @@ def test_setup_script_checks_before_installing_and_verifies_after():
     assert 'id -u)" -eq 0' in script  # refuses to run without root
     assert "set -euo pipefail" in script
     for check in ("worker can't read CEO's settings", "worker has no sudo", "worker can't reach that local service",
-                  "worker can't reach the home network", "worker can't read any home directory",
+                  "worker can't reach the home network", "worker can't read or enter any home directory",
                   "no worker process survives CEO's cleanup", "can run commands as the worker",
                   "couldn't start a test process as the worker"):
         assert check in script
@@ -187,3 +199,15 @@ def test_setup_script_checks_before_installing_and_verifies_after():
     assert 'can\'t read $SEED_ENV' in script
     assert "chown -R root:root /opt/ceo" in script  # neither user can change CEO's code
     assert "chmod 0640 /etc/ceo/env" in script
+
+
+def test_seeded_chat_settings_include_signal():
+    script = SCRIPT.read_text()
+    seed = re.search(r"grep -E '\^\(([^)]*)\)=' \"\$SEED_ENV\"", script)
+    assert seed and set(seed.group(1).split("|")) == {
+        "CEO_CHANNEL", "CEO_MATRIX_[A-Z_]+", "CEO_SIGNAL_[A-Z_]+", "CEO_ENGINEER_CHAT"}
+
+
+def test_home_directories_are_checked_for_entry_not_only_reading():
+    script = SCRIPT.read_text()
+    assert '{ test -r "$d" || test -x "$d"; }' in script

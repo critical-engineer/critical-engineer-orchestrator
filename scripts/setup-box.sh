@@ -3,7 +3,7 @@
 #
 #   sudo bash setup-box.sh [--seed-env FILE] [--engineer-github LOGIN] [--ref REF]
 #
-# --seed-env FILE         copy CEO_CHANNEL / CEO_MATRIX_* settings from FILE
+# --seed-env FILE         copy CEO_CHANNEL / CEO_MATRIX_* / CEO_SIGNAL_* settings from FILE
 #                         (e.g. ~/.config/ceo/env) into /etc/ceo/env the first time
 # --engineer-github LOGIN the engineer's GitHub login (approves plans by merging)
 # --ref REF               git ref of CEO to install (default: main)
@@ -107,7 +107,7 @@ if [ ! -f /etc/ceo/env ]; then
     echo "CEO_BUDGET_USD=20"
     echo "CEO_INTERVAL=60"
     if [ -n "$SEED_ENV" ]; then
-      grep -E '^(CEO_CHANNEL|CEO_MATRIX_[A-Z_]+|CEO_ENGINEER_CHAT)=' "$SEED_ENV" || true
+      grep -E '^(CEO_CHANNEL|CEO_MATRIX_[A-Z_]+|CEO_SIGNAL_[A-Z_]+|CEO_ENGINEER_CHAT)=' "$SEED_ENV" || true
     fi
   } > /etc/ceo/env
 fi
@@ -138,7 +138,9 @@ stop_ceo() {
   state=$(systemctl is-active ceo.service 2>/dev/null) || true
   [ "$state" = inactive ] || [ "$state" = failed ]
 }
-systemctl enable ceo.service
+# Not started at boot until the checks below pass (a failed check leaves it
+# disabled, so a reboot can't start an unchecked CEO).
+systemctl disable ceo.service 2>/dev/null || true
 if ! stop_ceo; then
   echo "couldn't stop ceo.service or confirm it stopped; not running the checks, which kill worker processes." >&2
   exit 1
@@ -159,16 +161,17 @@ expect_exit() {  # expect_exit <code> <description> <command...>
   "$@" >/dev/null 2>&1 || got=$?   # `|| got=$?` keeps `set -e` from aborting the script
   if [ "$got" -eq "$want" ]; then ok "$desc"; else bad "$desc (exit $got, expected $want)"; fi
 }
-# blocked_for_worker <description> <url>: the worker gets curl's 7 ("couldn't
+# blocked_for_worker <description> <url> [curl options]: the worker gets curl's 7 ("couldn't
 # connect") only means something if root *can* connect, so root goes first.
 # Root reached it only on 0 (a response) or 52 (connected, empty reply); 7
 # (refused) or 28 (timed out) mean nothing answers, and any other exit means
 # root's own attempt failed. Either way the block can't be tested: a warning.
 blocked_for_worker() {
   local desc=$1 url=$2 got=0
-  curl -s -k -m 3 -o /dev/null "$url" >/dev/null 2>&1 || got=$?
+  shift 2
+  curl -s -k -m 3 -o /dev/null "$@" "$url" >/dev/null 2>&1 || got=$?
   case $got in
-    0|52) expect_exit 7 "$desc" as_worker curl -s -k -m 3 -o /dev/null "$url" ;;
+    0|52) expect_exit 7 "$desc" as_worker curl -s -k -m 3 -o /dev/null "$@" "$url" ;;
     7|28) echo "  WARN $desc: nothing answers at $url even for root, so this can't be tested here" ;;
     *)    echo "  WARN $desc: root couldn't reach $url either (curl exit $got), so this can't be tested here" ;;
   esac
@@ -185,8 +188,9 @@ if as_worker true; then ok "can run commands as the worker"; else bad "can't run
 expect_exit 0 "worker can read its own home"            as_worker test -r /var/lib/ceo-worker
 expect_exit 1 "worker can't read CEO's settings"        as_worker test -r /etc/ceo/env
 expect_exit 1 "worker can't read CEO's home or ledger"  as_worker test -r /var/lib/ceo
-if as_worker bash -c 'for d in /home/* /root; do [ -e "$d" ] || continue; test -r "$d" && { echo "$d"; exit 1; }; done; exit 0'
-then ok "worker can't read any home directory"; else bad "worker can read a home directory (or the check couldn't run)"; fi
+# Read (-r) lists a directory; search (-x) is enough to open a file by its path.
+if as_worker bash -c 'for d in /home/* /root; do [ -e "$d" ] || continue; { test -r "$d" || test -x "$d"; } && { echo "$d"; exit 1; }; done; exit 0'
+then ok "worker can't read or enter any home directory"; else bad "worker can read or enter a home directory (or the check couldn't run)"; fi
 expect_exit 1 "worker has no sudo"                      as_worker sudo -n true
 if id -nG ceo-worker | grep -qwE "docker|sudo|adm|lxd"; then bad "worker is in a privileged group"; else ok "worker isn't in docker/sudo/adm/lxd"; fi
 expect_exit 0 "ceo can run as the worker"               runuser -u ceo -- sudo -n -u ceo-worker true
@@ -223,6 +227,7 @@ else
   blocked_for_worker "worker can't reach the home network ($gateway, http)"  "http://$gateway/"
   blocked_for_worker "worker can't reach the home network ($gateway, https)" "https://$gateway/"
 fi
+blocked_for_worker "worker has no IPv6 beyond loopback" "https://opencode.ai/" -6
 expect_exit 0 "checks can run pytest as the worker" as_worker env PATH=/opt/ceo/.venv/bin:/usr/bin:/bin python -m pytest --version
 
 # The ephemeral port range stays open on loopback for the servers checks start
@@ -246,11 +251,12 @@ for d in /media/* /media/*/* /mnt/*; do
 done
 
 if [ "$fail" -ne 0 ]; then
-  echo "Some checks FAILED; see above. ceo.service is left stopped."
+  echo "Some checks FAILED; see above. ceo.service is left stopped and disabled."
   exit 1
 fi
 
 say "starting CEO"
+systemctl enable ceo.service
 systemctl start ceo.service
 sleep 2
 if systemctl is-active --quiet ceo.service; then

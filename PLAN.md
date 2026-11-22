@@ -84,7 +84,7 @@ Credit: the research → plan → implement workflow and approvals bound to an e
 - C2. Python 3.11+, stdlib plus PyYAML. Every additional dependency needs a recorded decision. Exception (D10): the OpenSpec CLI (Node 22.12+), pinned, called as a subprocess, and relied on only for its file format and `--json` output (D10).
 - C3. Model access through OpenRouter, with a hard credit limit on the key (backstop) and per-run cost tracked in the ledger.
 - C4. Workers never hold the GitHub or chat-channel credentials, and can't write the ledger or the plan.
-- C5. Workers have no sudo, no Docker group membership, no access to users' home directories or other data on the box, no access to the home network, and no access to the chat channel (its API or credentials).
+- C5. Workers have no sudo, no Docker group membership, no access to users' home directories or other data on the box, no access to the home network, and no access to the chat channel (its API or credentials). Exception: data that is world-readable (e.g. a media library mounted under `/media` or `/mnt`) stays readable by the worker until its permissions change; setup warns about it rather than changing permissions other services may depend on.
 - C6. The approved plan is read-only during execution. Any change goes through a PR and re-approval.
 - C7. The ledger is the only store of execution status. No status is kept in the plan file. Under D10, the `tasks.md` checkboxes are written only by the orchestrator, at archive time, after checks pass. Agents never tick them; an edit to the approved file on `main` counts as a plan change (F3).
 - C8. Every decision a human makes through the chat channel is saved in the ledger. Decisions that change the plan become PRs.

@@ -12,7 +12,7 @@ sudo bash critical-engineer-orchestrator/scripts/setup-box.sh \
   --engineer-github <your GitHub login>
 ```
 
-`--seed-env` copies the chat settings (`CEO_CHANNEL`, `CEO_MATRIX_*`) into `/etc/ceo/env` the
+`--seed-env` copies the chat settings (`CEO_CHANNEL`, `CEO_MATRIX_*`, `CEO_SIGNAL_*`) into `/etc/ceo/env` the
 first time. Read the script first: it creates users, a sudoers rule and firewall rules.
 
 For anything beyond trying it out, install a commit you've reviewed rather than a moving branch:
@@ -28,7 +28,7 @@ For anything beyond trying it out, install a commit you've reviewed rather than 
 | `/opt/ceo` | CEO's code, owned by root: neither user can change it. |
 | `/etc/ceo/env` | Settings (root:ceo 0640), including the Matrix token. |
 | sudoers | `ceo` may run commands as `ceo-worker`; nothing else. |
-| firewall | `ceo-firewall.service` loads the `inet ceo_worker` table. For the worker, loopback is **denied by default** (no local service is reachable, whatever its port) except DNS to systemd-resolved (127.0.0.53/54) and the kernel's ephemeral port range, where tests start their own servers; the home network is blocked; the internet stays open (the model API). |
+| firewall | `ceo-firewall.service` loads the `inet ceo_worker` table. For the worker, loopback is **denied by default** (no local service is reachable, whatever its port) except DNS to systemd-resolved (127.0.0.53/54) and the kernel's ephemeral port range, where tests start their own servers; the home network is blocked, and so is all IPv6 beyond loopback (a home network may use a global IPv6 prefix); the internet stays open over IPv4 (the model API). |
 
 ## After setup
 
