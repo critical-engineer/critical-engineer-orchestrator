@@ -121,11 +121,16 @@ class Sandbox:
             return True
         prefix = ["sudo", "-n", "-u", self.user, "--"]
         for _ in range(5):
-            subprocess.run(prefix + ["pkill", "-KILL", "-u", self.user],
-                           stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
-            left = subprocess.run(prefix + ["pgrep", "-u", self.user],
-                                  stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
-            if left.returncode == 1:  # pgrep: nothing matched
+            try:
+                subprocess.run(prefix + ["pkill", "-KILL", "-u", self.user],
+                               stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+                left = subprocess.run(prefix + ["pgrep", "-c", "-u", self.user],
+                                      stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+            except subprocess.TimeoutExpired:
+                return False  # unconfirmed
+            # Only a count of 0 printed by pgrep itself confirms it: sudo
+            # refusing the command also exits 1, but prints no count.
+            if left.stdout.strip() == "0":
                 return True
             time.sleep(1)
         return False
