@@ -130,10 +130,17 @@ systemctl restart ceo-firewall.service
 
 say "service (stopped while the sandbox is checked)"
 # The checks below kill every worker process; CEO must not be running a task.
+# stop_ceo: stop CEO and confirm it has stopped. Fails if the stop fails or
+# the state can't be confirmed (a failed status query isn't "stopped").
+stop_ceo() {
+  local state
+  systemctl stop ceo.service || return 1
+  state=$(systemctl is-active ceo.service 2>/dev/null) || true
+  [ "$state" = inactive ] || [ "$state" = failed ]
+}
 systemctl enable ceo.service
-systemctl stop ceo.service 2>/dev/null || true
-if systemctl is-active --quiet ceo.service; then
-  echo "ceo.service is still running after 'systemctl stop'; not running the checks, which kill worker processes." >&2
+if ! stop_ceo; then
+  echo "couldn't stop ceo.service or confirm it stopped; not running the checks, which kill worker processes." >&2
   exit 1
 fi
 
@@ -154,20 +161,22 @@ expect_exit() {  # expect_exit <code> <description> <command...>
 }
 # blocked_for_worker <description> <url>: the worker gets curl's 7 ("couldn't
 # connect") only means something if root *can* connect, so root goes first.
-# 7 (refused) and 28 (timed out) mean nothing answered for root either.
+# Root reached it only on 0 (a response) or 52 (connected, empty reply); 7
+# (refused) or 28 (timed out) mean nothing answers, and any other exit means
+# root's own attempt failed. Either way the block can't be tested: a warning.
 blocked_for_worker() {
   local desc=$1 url=$2 got=0
   curl -s -k -m 3 -o /dev/null "$url" >/dev/null 2>&1 || got=$?
-  if [ "$got" -eq 7 ] || [ "$got" -eq 28 ]; then
-    echo "  WARN $desc: nothing answers at $url even for root, so this can't be tested here"
-    return 0
-  fi
-  expect_exit 7 "$desc" as_worker curl -s -k -m 3 -o /dev/null "$url"
+  case $got in
+    0|52) expect_exit 7 "$desc" as_worker curl -s -k -m 3 -o /dev/null "$url" ;;
+    7|28) echo "  WARN $desc: nothing answers at $url even for root, so this can't be tested here" ;;
+    *)    echo "  WARN $desc: root couldn't reach $url either (curl exit $got), so this can't be tested here" ;;
+  esac
 }
 # is_worker_probe <pid>: a live (not zombie) `sleep` owned by the worker.
 is_worker_probe() {
   local info
-  info=$(ps -o user=,stat=,comm= -p "$1" 2>/dev/null) || return 1
+  info=$(ps -o user:32=,stat=,comm= -p "$1" 2>/dev/null) || return 1  # wide: no "ceo-wor+"
   set -- $info
   [ "${1:-}" = ceo-worker ] && [ "${2#Z}" = "${2:-}" ] && [ -n "${2:-}" ] && [ "${3:-}" = sleep ]
 }

@@ -94,8 +94,23 @@ def test_setup_keeps_ceo_stopped_until_the_sandbox_checks_pass():
     assert stop < checks < cleanup < start
     assert "systemctl restart ceo.service" not in script
     # A stop that didn't take aborts before any check can kill a live task.
-    still_running = script.index("if systemctl is-active --quiet ceo.service; then", stop)
-    assert still_running < checks and "exit 1" in script[still_running:checks]
+    guard = script.index("if ! stop_ceo; then")
+    assert stop < guard < checks and "exit 1" in script[guard:checks]
+
+
+def test_ceo_counts_as_stopped_only_when_confirmed(tmp_path):
+    cases = {
+        "stopped": ("exit 0", "echo inactive; exit 3", True),
+        "failed unit": ("exit 0", "echo failed; exit 3", True),
+        "stop fails": ("exit 1", "echo inactive; exit 3", False),
+        "still active": ("exit 0", "echo active; exit 0", False),
+        "status unknown": ("exit 0", "exit 1", False),
+    }
+    for name, (stop, is_active, stopped) in cases.items():
+        d = tmp_path / name.replace(" ", "-")
+        stub = f'case "$1" in stop) {stop};; is-active) {is_active};; esac'
+        out = run_helpers(d, "stop_ceo && echo stopped || echo running", {"systemctl": stub})
+        assert out.strip() == ("stopped" if stopped else "running"), name
 
 
 def shell_function(name: str) -> str:
@@ -113,7 +128,8 @@ def run_helpers(tmp_path, body: str, stubs: dict[str, str]) -> str:
         (bin_dir / name).chmod(0o755)
     program = "\n".join([
         'ok() { echo "ok $*"; }', 'bad() { echo "FAIL $*"; }', 'as_worker() { WORKER=1 "$@"; }',
-        shell_function("expect_exit"), shell_function("blocked_for_worker"), shell_function("is_worker_probe"), body,
+        shell_function("expect_exit"), shell_function("blocked_for_worker"), shell_function("is_worker_probe"),
+        shell_function("stop_ceo"), body,
     ])
     env = {"PATH": f"{bin_dir}:/usr/bin:/bin"}
     return subprocess.run(["bash", "-c", program], env=env, capture_output=True, text=True, check=True).stdout
@@ -127,6 +143,14 @@ def test_a_network_block_only_passes_when_root_can_connect(tmp_path):
     # Nothing listening at all: not a pass, a warning.
     out = run_helpers(tmp_path / "b", 'blocked_for_worker "blocked" http://x/', {"curl": "exit 7"})
     assert "WARN" in out and "ok" not in out
+    # Root's own attempt fails some other way (6: couldn't resolve): not a pass.
+    out = run_helpers(tmp_path / "d", 'blocked_for_worker "blocked" http://x/',
+                      {"curl": '[ -n "${WORKER:-}" ] && exit 7; exit 6'})
+    assert "WARN" in out and "exit 6" in out and "ok" not in out
+    # Connected but empty reply (52) still proves root reached it.
+    out = run_helpers(tmp_path / "e", 'blocked_for_worker "blocked" http://x/',
+                      {"curl": '[ -n "${WORKER:-}" ] && exit 7; exit 52'})
+    assert out.strip() == "ok blocked"
     # The worker gets through: a failure.
     out = run_helpers(tmp_path / "c", 'blocked_for_worker "blocked" http://x/', {"curl": "exit 0"})
     assert out.startswith("FAIL blocked")
@@ -137,8 +161,11 @@ def test_the_cleanup_probe_must_be_a_live_worker_sleep(tmp_path):
                              ("root S sleep", False), ("ceo-worker S bash", False), ("", False)):
         d = tmp_path / str(abs(hash(ps_output)))
         d.mkdir()
+        # Like procps at its default width, the stub truncates long user names
+        # unless asked for a wide column.
+        truncate = '' if not ps_output.startswith("ceo-worker") else 'case "$*" in *user:32=*) ;; *) echo "ceo-wor+ ${OUT#* }"; exit 0;; esac;'
         out = run_helpers(d, "is_worker_probe 123 && echo alive || echo gone",
-                          {"ps": f'echo "{ps_output}"; [ -n "{ps_output}" ]'})
+                          {"ps": f'OUT="{ps_output}"; {truncate} echo "$OUT"; [ -n "$OUT" ]'})
         assert out.strip() == ("alive" if alive else "gone"), ps_output
 
 
