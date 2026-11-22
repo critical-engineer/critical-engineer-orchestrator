@@ -17,6 +17,7 @@ import re
 import signal
 import subprocess
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -109,6 +110,25 @@ class Sandbox:
             os.killpg(pgid, sig)
         except (ProcessLookupError, PermissionError):
             pass
+
+    def stop_all(self) -> bool:
+        """Kill every process of the worker user and confirm none is left.
+
+        Used on recovery: a worker can outlive an orchestrator that was killed
+        mid-task. Without a worker user there is nothing to find (tests, dev).
+        """
+        if not self.user:
+            return True
+        prefix = ["sudo", "-n", "-u", self.user, "--"]
+        for _ in range(5):
+            subprocess.run(prefix + ["pkill", "-KILL", "-u", self.user],
+                           stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+            left = subprocess.run(prefix + ["pgrep", "-u", self.user],
+                                  stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
+            if left.returncode == 1:  # pgrep: nothing matched
+                return True
+            time.sleep(1)
+        return False
 
     def _clean_up(self, pgid: int) -> None:
         """Leave nothing running that this command started."""

@@ -525,3 +525,22 @@ def test_a_superseded_escalation_does_not_choose_the_model(setup):
     setup["conn"].commit()
     ex.run_task(plan(setup), TASK)
     assert worker.models_used[-1] == "opencode/free"  # not the superseded escalation's model
+
+
+@pytest.mark.parametrize("current", ["approved", "denied"])
+def test_a_current_gate_decides_even_if_an_older_one_is_decided_too(setup, current):
+    # Re-approved with the same definition while a gate was open: route_blocked
+    # opens a current gate. Both get decided before the next cycle; the older
+    # one must not release the task past the current decision.
+    high = TaskSpec("1.1", "Write hello", "grep -q hello hello.txt", "high")
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}))
+    assert ex.run_task(plan(setup), high) == "gate:high_radius"
+    old = gates(setup)[0]["id"]
+    reapprove(setup)
+    assert ex.route_blocked(plan(setup), {"1.1": high}) == ["1.1"]
+    new = gates(setup)[1]["id"]
+    decide_gate(setup["conn"], old, "approved", route="chat", identity=ME, engineer=ENGINEER)
+    decide_gate(setup["conn"], new, current, route="chat", identity=ME, engineer=ENGINEER,
+                reason="no" if current == "denied" else None)
+    ex.resolve_gates(plan(setup), {"1.1": high})
+    assert task_row(setup)["status"] == ("pending" if current == "approved" else "blocked")

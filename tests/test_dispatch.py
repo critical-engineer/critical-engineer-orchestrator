@@ -296,3 +296,21 @@ def test_timeout_returns_even_if_group_signals_cannot_reach_the_worker(tmp_path)
     thread.join(timeout=30)
     assert not thread.is_alive(), "Sandbox.run hung after the timeout"
     assert result["r"].returncode == 124
+
+
+def test_stop_all_kills_the_worker_user_and_confirms(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **kw):
+        calls.append(argv[argv.index("--") + 1:])
+        left = argv[argv.index("--") + 1] == "pgrep" and fake_run.left
+        return subprocess.CompletedProcess(argv, 0 if left else 1, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    fake_run.left = False
+    assert Sandbox(user="w").stop_all() is True
+    assert calls[0] == ["pkill", "-KILL", "-u", "w"] and calls[1] == ["pgrep", "-u", "w"]
+    fake_run.left = True
+    assert Sandbox(user="w").stop_all() is False
+    assert Sandbox(user=None).stop_all() is True  # no worker user: nothing to find

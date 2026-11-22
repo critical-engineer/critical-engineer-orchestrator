@@ -288,6 +288,15 @@ class Executor:
                 pass  # recorded as notify.failed; the gate stays open and is listed by the skill
         return f"gate:{kind}"
 
+    def _has_current_gate(self, plan: sqlite3.Row, task_id: str, definition: str | None) -> bool:
+        """Is there a gate for this approved plan and task definition?"""
+        return self.conn.execute(
+            "SELECT 1 FROM gates WHERE plan_id = ? AND task_id = ?"
+            " AND json_extract(payload, '$.approved_sha') = ?"
+            " AND json_extract(payload, '$.definition_hash') IS ?",
+            (plan["id"], task_id, plan["approved_sha"], definition),
+        ).fetchone() is not None
+
     def _notify(self, kind: str, summary: str, plan: sqlite3.Row, task_id: str) -> None:
         if self.channel is None:
             return
@@ -331,8 +340,11 @@ class Executor:
             # Decided for an older plan or task definition: it covers nothing now.
             # A new definition stays blocked: route_blocked asks the engineer
             # (stale_evidence) before it runs again. A re-approval with the same
-            # definition was itself the engineer's decision, so it runs again.
-            if payload.get("definition_hash") == self._definition_hash(plan["id"], task.id):
+            # definition was itself the engineer's decision, so it runs again,
+            # unless a current gate exists: then that gate's decision governs.
+            definition = self._definition_hash(plan["id"], task.id)
+            if (payload.get("definition_hash") == definition
+                    and not self._has_current_gate(plan, task.id, definition)):
                 self._set_status(plan["id"], task.id, "pending")
             record_event(self.conn, "task.gate_superseded", plan_id=plan["id"], task_id=task.id,
                          detail={"gate": gate["id"]})
@@ -392,13 +404,7 @@ class Executor:
             task = tasks.get(task_id)
             if task is None:
                 continue
-            has_route = self.conn.execute(
-                "SELECT 1 FROM gates WHERE plan_id = ? AND task_id = ?"
-                " AND json_extract(payload, '$.approved_sha') = ?"
-                " AND json_extract(payload, '$.definition_hash') IS ?",
-                (plan["id"], task_id, plan["approved_sha"], definition),
-            ).fetchone()
-            if has_route:
+            if self._has_current_gate(plan, task_id, definition):
                 continue
             self._gate(
                 plan, task, "stale_evidence",

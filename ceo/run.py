@@ -69,8 +69,10 @@ class Orchestrator:
 
     def cycle(self) -> list[str]:
         self.log, self.failed = [], False
-        self._recover_interrupted()
+        recovered = self._recover_interrupted()
         self._read_answers()
+        if not recovered:
+            return self.log  # nothing may start while an earlier worker may run
         for change in self.plans:
             try:
                 self._plan_cycle(change)
@@ -89,8 +91,18 @@ class Orchestrator:
         except sqlite3.Error:
             pass  # the ledger itself is failing; the printed traceback is all we have
 
-    def _recover_interrupted(self) -> None:
+    def _recover_interrupted(self) -> bool:
+        """Reset tasks a dead orchestrator left running. False: not safe yet."""
         rows = self.conn.execute("SELECT plan_id, id FROM tasks WHERE status = 'running'").fetchall()
+        if not rows:
+            return True
+        # A worker can outlive an orchestrator killed mid-task: reset nothing
+        # until no worker process is left, or the task could run twice at once.
+        sandboxes = [getattr(self.executor.worker, "sandbox", None), self.executor.check_sandbox]
+        if not all(sandbox.stop_all() for sandbox in sandboxes if sandbox is not None):
+            record_event(self.conn, "recovery.deferred", detail={"tasks": [row[1] for row in rows]})
+            self.log.append("an earlier worker is still running; recovery waits for the next cycle")
+            return False
         for row in rows:
             with self.conn:
                 self.conn.execute(
@@ -98,6 +110,7 @@ class Orchestrator:
                 )
             record_event(self.conn, "task.interrupted", plan_id=row[0], task_id=row[1])
             self.log.append(f"recovered interrupted task {row[1]}")
+        return True
 
     def _read_answers(self) -> None:
         if self.channel is None or not hasattr(self.channel, "receive"):

@@ -479,3 +479,27 @@ def test_a_task_gate_without_a_question_gets_one(world):
     assert len(asks) == 1 and "task 1.2" in asks[0]
     orch.cycle()
     assert sum("Approval needed (high_radius)" in m for m in world["chat"].sent) == 1  # once
+
+
+def test_recovery_waits_until_the_earlier_worker_is_gone(world):
+    # The orchestrator died mid-task: its worker may still be running. The
+    # task is reset only once no worker process is left.
+    orch, conn = world["orch"], world["conn"]
+    orch.cycle()
+    # 1.2 was running when CEO died; 1.1 is ready again (nothing must start
+    # while the earlier worker may still be running).
+    conn.execute("UPDATE tasks SET status = CASE id WHEN '1.2' THEN 'running' ELSE 'pending' END")
+    conn.commit()
+
+    class StubbornSandbox(Sandbox):
+        def stop_all(self):
+            return False
+
+    real = orch.executor.check_sandbox
+    orch.executor.check_sandbox = StubbornSandbox(user="ceo-worker")
+    log = orch.cycle()
+    assert any("earlier worker" in line for line in log)
+    assert statuses(conn)["1.2"] == "running" and world["worker"].done == ["1.1"]  # nothing dispatched
+    orch.executor.check_sandbox = real
+    log = orch.cycle()
+    assert "recovered interrupted task 1.2" in log and "greet: task 1.1 -> completed" in log
