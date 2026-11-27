@@ -26,6 +26,7 @@ token is written straight into the settings file (CEO_ENV_FILE, default
 """
 
 import getpass
+import html
 import json
 import os
 import re
@@ -157,7 +158,8 @@ class MatrixChannel:
         self._request(
             "PUT",
             f"/rooms/{self._room}/send/m.room.message/{uuid.uuid4().hex}",
-            {"msgtype": "m.text", "body": message},
+            {"msgtype": "m.text", "body": message,
+             "format": "org.matrix.custom.html", "formatted_body": to_html(message)},
         )
 
     def receive(self, cursor: str | None, *, wait: float = 30) -> InboundBatch:
@@ -203,6 +205,22 @@ class MatrixChannel:
 
     def join(self) -> None:
         self._request("POST", f"/join/{self._room}", {})
+
+
+def to_html(message: str) -> str:
+    """The same message for clients that render HTML: the first line in bold,
+    a JSON block (from a line "{" to a line "}") as code, everything escaped."""
+    lines, out, i = message.split("\n"), [], 0
+    while i < len(lines):
+        if lines[i] == "{" and "}" in lines[i:]:
+            end = lines.index("}", i)
+            out.append("<pre><code>" + html.escape("\n".join(lines[i : end + 1])) + "</code></pre>")
+            i = end + 1
+            continue
+        text = html.escape(lines[i])
+        out.append(f"<b>{text}</b><br>" if i == 0 else text + "<br>")
+        i += 1
+    return "".join(out).removesuffix("<br>")
 
 
 def password_login(homeserver: str, user_id: str, password: str, *, timeout: float = 30) -> dict:

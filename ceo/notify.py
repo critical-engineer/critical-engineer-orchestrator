@@ -131,6 +131,7 @@ def format_notification(
     plan: str | None = None,
     task_id: str | None = None,
     question_id: int | None = None,
+    gate: bool = False,
 ) -> str:
     if kind not in NOTIFICATION_KINDS:
         raise ValueError(f"unknown notification kind {kind!r}")
@@ -141,7 +142,12 @@ def format_notification(
         header += f" · {_clip(plan, _MAX_LABEL)}"
     if task_id:
         header += f" · task {_clip(task_id, _MAX_LABEL)}"
-    footer = f"\n\nReply: Q{question_id} <answer>" if question_id is not None else ""
+    if question_id is None:
+        footer = ""
+    elif gate:
+        footer = f"\n\nReply: Q{question_id} approve, or Q{question_id} deny <reason>"
+    else:
+        footer = f"\n\nReply: Q{question_id} <answer>"
     body = summary.strip()
     room = MAX_LENGTH - len(header) - len(footer) - 2
     return f"{header}\n\n{_clip(body, room)}{footer}"
@@ -161,10 +167,11 @@ def notify(
     plan: str | None = None,
     task_id: str | None = None,
     question_id: int | None = None,
+    gate: bool = False,
 ) -> str:
     """Send a notification and record it in the ledger. Returns the message sent."""
     message = format_notification(
-        kind, summary, plan=plan, task_id=task_id, question_id=question_id
+        kind, summary, plan=plan, task_id=task_id, question_id=question_id, gate=gate
     )
     detail = {"channel": channel.name, "message": message, "summary": summary}
     if question_id is not None:

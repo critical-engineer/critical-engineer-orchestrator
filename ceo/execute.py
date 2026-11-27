@@ -44,6 +44,13 @@ def integration_branch(change: str) -> str:
     return f"ceo/{change}/integration"
 
 
+_WORKER_TAIL = 2000  # characters of a failed worker's output kept in the ledger
+
+
+def _one_line(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
 @dataclass(frozen=True)
 class TaskSpec:
     id: str
@@ -107,6 +114,7 @@ class Executor:
                 feedback=self._feedback(plan["id"], task.id),
             )
             result = worker.run(prompt, workdir)
+            self._share(getattr(worker, "sandbox", None), workdir)
             # The cost is known now; record it before anything else can fail,
             # so the budget always counts it.
             with conn:
@@ -131,16 +139,19 @@ class Executor:
             # towards the attempt limit and escalation instead of leaving the
             # task 'running'.
             self._finish_run(run_id, sha, check_exit, output)
-            return self._failed(plan, task, f"the attempt raised {exc!r}"[:500])
+            # str(exc) carries the path of an OSError; repr() doesn't.
+            return self._failed(plan, task, f"the attempt raised {type(exc).__name__}: {exc}"[:500],
+                                output=result.text if result else "")
 
         self._finish_run(run_id, sha, check_exit, output)
 
         if not result.ok:
-            return self._failed(plan, task, f"worker failed: {'; '.join(result.errors)[:500]}")
+            return self._failed(plan, task, f"worker failed: {'; '.join(result.errors)[:500]}", output=result.text)
         if not result.reported_assumptions:
-            return self._failed(plan, task, "the worker didn't end with an ASSUMPTIONS: section")
+            return self._failed(plan, task, "the worker didn't end with an ASSUMPTIONS: section", output=result.text)
         if unchanged and check_exit != 0:
-            return self._failed(plan, task, f"the worker changed nothing and the check fails (exit {check_exit})")
+            return self._failed(plan, task, f"the worker changed nothing and the check fails (exit {check_exit})",
+                                output=result.text)
         if result.assumptions:
             return self._gate(
                 plan, task, "unsanctioned_assumption",
@@ -151,7 +162,7 @@ class Executor:
             )
         if check_exit == 0:
             return self._passed(plan, task, sha, output)
-        return self._failed(plan, task, f"check failed (exit {check_exit}): {output[-300:]}")
+        return self._failed(plan, task, f"check failed (exit {check_exit}): {output[-300:]}", output=result.text)
 
     def _finish_run(self, run_id: int, sha: str | None, check_exit: int | None, output: str) -> None:
         with self.conn:
@@ -212,6 +223,7 @@ class Executor:
         result = self.check_sandbox.run(
             ["bash", "-c", task.check], cwd=checkdir, timeout=self.check_timeout, max_output=_OUTPUT_LIMIT
         )
+        self._share(self.check_sandbox, checkdir)
         output = (result.stdout or "") + (result.stderr or "")
         return result.returncode, output[-_OUTPUT_LIMIT:]
 
@@ -240,8 +252,11 @@ class Executor:
         self._notify("done", f"Task {task.id} passed its check ({sha[:12]}).", plan, task.id)
         return "completed"
 
-    def _failed(self, plan: sqlite3.Row, task: TaskSpec, reason: str) -> str:
-        record_event(self.conn, "task.attempt_failed", plan_id=plan["id"], task_id=task.id, detail={"reason": reason})
+    def _failed(self, plan: sqlite3.Row, task: TaskSpec, reason: str, *, output: str = "") -> str:
+        detail = {"reason": reason}
+        if output:
+            detail["output_tail"] = output[-_WORKER_TAIL:]  # why it failed, for the engineer
+        record_event(self.conn, "task.attempt_failed", plan_id=plan["id"], task_id=task.id, detail=detail)
         attempts = self.conn.execute(
             "SELECT attempts FROM tasks WHERE plan_id = ? AND id = ?", (plan["id"], task.id)
         ).fetchone()[0]
@@ -253,11 +268,28 @@ class Executor:
             plan, task, "escalation",
             {"task": task.id, "from_model": current, "to_model": self.escalation_model,
              "attempts": attempts, "reason": reason},
-            f"Task {task.id} failed {attempts} attempts. Last: {reason[:300]}\n"
-            + (f"Approve one more attempt on {self.escalation_model}, " if self.escalation_model
-               else "Approve one more attempt, ")
-            + "or deny with a reason (e.g. the plan needs changing).",
+            self._escalation_summary(plan, task, attempts, current, output),
         )
+
+    def _escalation_summary(self, plan: sqlite3.Row, task: TaskSpec, attempts: int, model: str, output: str) -> str:
+        """What the engineer needs to decide an escalation: the task, why each
+        attempt failed, what the worker said last, and what each answer does."""
+        reasons = [
+            json.loads(row[0]).get("reason", "?")
+            for row in self.conn.execute(
+                "SELECT detail FROM events WHERE plan_id = ? AND task_id = ? AND kind = 'task.attempt_failed'"
+                " ORDER BY id DESC LIMIT ?",
+                (plan["id"], task.id, attempts),
+            )
+        ][::-1]
+        lines = [f"Task {task.id} failed {attempts} attempts on {model}: {_one_line(task.description, 160)}", ""]
+        lines += [f"- Attempt {n}: {_one_line(r, 300)}" for n, r in enumerate(reasons, 1)]
+        if output.strip():
+            lines += ["", "The worker's last words:", _one_line(output.strip()[-300:], 300)]
+        lines += ["", (f"approve: one more attempt on {self.escalation_model}" if self.escalation_model
+                       else "approve: one more attempt on the same model (no stronger model is configured)"),
+                  "deny <reason>: the task stays blocked; change the plan, or approve a later attempt"]
+        return "\n".join(lines)
 
     def _gate(self, plan: sqlite3.Row, task: TaskSpec, kind: str, payload: dict, summary: str) -> str:
         # A gate covers one approved plan and one task definition: a decision
@@ -296,6 +328,11 @@ class Executor:
             " AND json_extract(payload, '$.definition_hash') IS ?",
             (plan["id"], task_id, plan["approved_sha"], definition),
         ).fetchone() is not None
+
+    @staticmethod
+    def _share(sandbox: Sandbox | None, path: Path) -> None:
+        if sandbox is not None:
+            sandbox.share(path)
 
     def _notify(self, kind: str, summary: str, plan: sqlite3.Row, task_id: str) -> None:
         if self.channel is None:

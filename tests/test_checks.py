@@ -544,3 +544,68 @@ def test_a_current_gate_decides_even_if_an_older_one_is_decided_too(setup, curre
                 reason="no" if current == "denied" else None)
     ex.resolve_gates(plan(setup), {"1.1": high})
     assert task_row(setup)["status"] == ("pending" if current == "approved" else "blocked")
+
+
+# the first hosted run (task 1.1 of publish-results)
+
+
+class SharingSandbox(RecordingSandbox):
+    def __init__(self):
+        super().__init__()
+        object.__setattr__(self, "shared", [])
+
+    def share(self, path):
+        self.shared.append(Path(path))
+
+
+def test_the_check_workspace_is_shared_back_before_ceo_cleans_it(setup):
+    # Tools (pytest's cache) create files with the worker's own group; CEO
+    # must get group access before it reads or removes them.
+    sandbox = SharingSandbox()
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}), check_sandbox=sandbox)
+    ex.run_task(plan(setup), TASK)
+    assert [p.name for p in sandbox.shared] == ["1.1-1-check"]
+
+
+def test_the_worker_workspace_is_shared_back_before_copy_back(setup):
+    sandbox = SharingSandbox()
+
+    @dataclass
+    class SandboxedWorker(FakeWorker):
+        sandbox: object = None
+
+    worker = SandboxedWorker(files={"hello.txt": "hello\n"}, sandbox=sandbox)
+    executor(setup, worker).run_task(plan(setup), TASK)
+    assert [p.name for p in sandbox.shared] == ["1.1-1"]
+
+
+def test_a_failed_attempt_names_the_file_and_keeps_the_workers_words(setup, monkeypatch):
+    import ceo.execute
+
+    def unreadable(*args, **kwargs):
+        raise PermissionError(13, "Permission denied", "/srv/ceo/work/demo/1.1-1/.pytest_cache/v")
+
+    monkeypatch.setattr(ceo.execute, "commit_result", unreadable)
+    ex = executor(setup, FakeWorker(files={"hello.txt": "hello\n"}, text="I wrote it.\nASSUMPTIONS: none"))
+    ex.run_task(plan(setup), TASK)
+    detail = json.loads(setup["conn"].execute(
+        "SELECT detail FROM events WHERE kind = 'task.attempt_failed'").fetchone()[0])
+    assert ".pytest_cache/v" in detail["reason"] and detail["reason"].startswith("the attempt raised PermissionError")
+    assert detail["output_tail"] == "I wrote it.\nASSUMPTIONS: none"
+
+
+def test_an_escalation_says_what_happened_and_what_each_answer_does(setup):
+    channel = FakeChannel()
+    worker = FakeWorker(files={"hello.txt": "nope\n"}, text="I gave up early.\nASSUMPTIONS: none")
+    ex = executor(setup, worker, max_attempts=2, channel=channel)
+    ex.run_task(plan(setup), TASK)
+    ex.run_task(plan(setup), TASK)
+    message = channel.sent[-1]
+    assert "Task 1.1 failed 2 attempts on opencode/free: Write hello" in message
+    assert "- Attempt 1: check failed" in message and "- Attempt 2: check failed" in message
+    assert "I gave up early." in message
+    assert "approve: one more attempt on the same model (no stronger model is configured)" in message
+    assert "deny <reason>: the task stays blocked" in message
+    # One reply line, specific to a decision; no "Q<n>" placeholder.
+    assert message.count("Reply:") == 1 and "Q<n>" not in message
+    assert message.endswith("Reply: Q1 approve, or Q1 deny <reason>")

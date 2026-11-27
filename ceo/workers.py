@@ -124,6 +124,22 @@ class Sandbox:
         except (ProcessLookupError, PermissionError):
             pass
 
+    def share(self, path: Path) -> None:
+        """Give ``path``'s group (the group CEO shares with the worker) read and
+        write access to everything the worker made in it.
+
+        Tools can create files elsewhere and move them in (pytest's cache does),
+        so they keep the worker's own group and CEO can't read them. Run as the
+        worker, which owns those files; symlinks are never followed, and files
+        the worker doesn't own are left alone (already shared at export).
+        """
+        if not self.user:
+            return
+        group = str(path.stat().st_gid)
+        prefix = ["sudo", "-n", "-u", self.user, "--"]
+        for argv in (["chgrp", "-R", "-h", "-f", group, str(path)], ["chmod", "-R", "-f", "g+rwX", str(path)]):
+            subprocess.run(prefix + argv, stdin=subprocess.DEVNULL, capture_output=True, timeout=120)
+
     def stop_all(self) -> bool:
         """Kill every process of the worker user and confirm none is left.
 
