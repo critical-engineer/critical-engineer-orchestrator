@@ -51,6 +51,10 @@ def export(repo: Path, commit: str, dest: Path, *, group_writable: bool = True) 
     return dest
 
 
+def _raise(error: OSError) -> None:
+    raise error  # os.walk would otherwise skip a directory it can't read, silently
+
+
 def _copy_back(src: Path, dest: Path) -> None:
     """Mirror the worker's files into ``dest`` (CEO's worktree), safely."""
     for entry in dest.iterdir():
@@ -60,7 +64,7 @@ def _copy_back(src: Path, dest: Path) -> None:
             shutil.rmtree(entry)
         else:
             entry.unlink()
-    for root, dirs, files in os.walk(src, followlinks=False):
+    for root, dirs, files in os.walk(src, followlinks=False, onerror=_raise):
         here = Path(root)
         target_dir = dest / here.relative_to(src)
         target_dir.mkdir(exist_ok=True)

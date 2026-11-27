@@ -363,3 +363,33 @@ def test_run_works_with_an_explicit_path_that_has_no_env(tmp_path):
         ["mytool"], cwd=tmp_path, timeout=10, env={"PATH": str(tmp_path / "nothing-here")}
     )
     assert (result.returncode, result.stdout) == (0, "found\n")
+
+
+
+def test_share_gives_the_workspace_group_access_as_the_worker(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(subprocess, "run", lambda argv, **kw: calls.append(argv) or subprocess.CompletedProcess(argv, 0))
+    Sandbox(user="w").share(tmp_path)
+    gid = str(tmp_path.stat().st_gid)
+    assert calls == [
+        ["sudo", "-n", "-u", "w", "--", "chgrp", "-R", "-h", "-f", gid, str(tmp_path)],
+        ["sudo", "-n", "-u", "w", "--", "chmod", "-R", "-f", "g+rwX", str(tmp_path)],
+    ]
+    calls.clear()
+    Sandbox(user=None).share(tmp_path)
+    assert calls == []  # no worker user: nothing to share
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads everything")
+def test_copy_back_fails_loudly_on_a_directory_it_cant_read(repo, tmp_path):
+    base = git(repo, "rev-parse", "HEAD")
+    work = export(repo, base, tmp_path / "work")
+    hidden = work / ".pytest_cache" / "v"
+    hidden.mkdir(parents=True)
+    (hidden / "data").write_text("x\n")
+    hidden.chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            commit_result(repo, base, work, branch="ceo/plan/1.1", message="1.1")
+    finally:
+        hidden.chmod(0o755)

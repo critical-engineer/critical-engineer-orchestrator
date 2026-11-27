@@ -96,7 +96,8 @@ def test_send_posts_plain_text_to_the_room(api, channel):
     channel.send("hello")
     [(method, path, headers, body)] = sends(api)
     assert path.startswith(f"{API}/rooms/{ROOM}/send/m.room.message/")
-    assert body == {"msgtype": "m.text", "body": "hello"}
+    assert body == {"msgtype": "m.text", "body": "hello",
+                    "format": "org.matrix.custom.html", "formatted_body": "<b>hello</b>"}
     assert headers["Authorization"] == f"Bearer {TOKEN}"
 
 
@@ -408,3 +409,12 @@ def test_cli_login_prints_nothing_from_the_server_response(api, monkeypatch, tmp
     out = capsys.readouterr().out
     assert "DEVICE_FROM_SERVER" not in out and "@spoofed" not in out and "300000" not in out
     assert f"logged in as {BOT}" in out and "it expires and will need refreshing" in out
+
+
+def test_html_has_a_bold_header_a_code_block_and_escapes_everything():
+    message = "[CEO] question · p\n\nApproval needed <x> & y\n{\n \"a\": \"<b>\"\n}\nReply: Q1 approve"
+    out = matrix.to_html(message)
+    assert out.startswith("<b>[CEO] question · p</b><br>")
+    assert "Approval needed &lt;x&gt; &amp; y<br>" in out
+    assert "<pre><code>{\n &quot;a&quot;: &quot;&lt;b&gt;&quot;\n}</code></pre>" in out
+    assert out.endswith("Reply: Q1 approve")

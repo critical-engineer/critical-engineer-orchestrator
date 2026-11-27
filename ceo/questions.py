@@ -71,6 +71,7 @@ def ask(
         plan=plan,
         task_id=task_id,
         question_id=question_id,
+        gate=gate_id is not None,
     )
     return question_id
 
@@ -95,6 +96,7 @@ def resend(conn: sqlite3.Connection, channel: Channel, question_id: int, *, plan
         plan=plan,
         task_id=question["task_id"],
         question_id=question_id,
+        gate=question["gate_id"] is not None,
     )
 
 
@@ -111,11 +113,11 @@ def ask_gate(
     if gate is None:
         raise GateError(f"no gate {gate_id}")
     payload = json.dumps(json.loads(gate["payload"]), indent=1, ensure_ascii=False)
+    # The summary is for reading; the payload below is exactly what a
+    # decision covers, with its fingerprint.
     text = (
-        f"Approval needed ({gate['kind']}): {summary.strip()}\n\n"
-        f"{payload}\n"
-        f"sha256 {gate['payload_sha256'][:12]}\n\n"
-        "Reply 'Q<n> approve' or 'Q<n> deny <reason>'."
+        f"Approval needed ({gate['kind']})\n\n{summary.strip()}\n\n"
+        f"What you decide on (sha256 {gate['payload_sha256'][:12]}):\n{payload}"
     )
     return ask(
         conn, channel, gate["plan_id"], text, task_id=gate["task_id"], gate_id=gate_id, plan=plan
